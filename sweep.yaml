@@ -1,0 +1,35 @@
+# sweep.yaml
+
+# The script that the wandb agent will execute.
+program: train.py
+
+# The search strategy. 'bayes' is often more efficient than 'random'.
+method: bayes
+
+# The project name.
+project: alphazero-chess
+
+# The metric we are trying to optimize.
+metric:
+  name: val_loss      # The name of the metric logged in train.py
+  goal: minimize      # We want to make the validation loss as small as possible
+
+# The hyperparameters to search over.
+parameters:
+  max_epochs:
+    value: 10
+
+  patience:
+    value: 2
+
+  lr:
+    # Use a log uniform distribution to effectively search across orders of magnitude.
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-2 
+
+  weight_decay:
+    # This is also a good candidate for log uniform distribution.
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-2

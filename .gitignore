@@ -1,0 +1,24 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment folders (a common best practice)
+venv/
+env/
+.*/
+
+# IDE and editor configuration files
+.vscode/
+.idea/
+*.sublime-*
+
+# Logs and generated data (DO NOT TRACK THESE)
+/logs/
+/checkpoints/
+/replay_buffer/
+/wandb/
+
+# Local configuration files (if you ever add any)
+*.env
