@@ -197,75 +197,59 @@ def train(net, device, train_loader, val_loader, args):
 #  Wandb Sweep & Main Execution
 # ─────────────────────────────────────────────────────────────────────────────
 
-def sweep_iteration():
-    """A single run of a wandb sweep agent."""
-    # The agent calls wandb.init() and passes config values
-    run = wandb.init()
-    args = wandb.config # Get hyperparameters from the sweep controller
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    net = AlphaZeroNet().to(device)
-
-    encoder = MoveEncoder()
-    full_dataset = load_training_window(encoder)
-    if not full_dataset: return
-
-    # Create data loaders (batch size is also a swept parameter)
-    n_val = int(0.2 * len(full_dataset))
-    n_train = len(full_dataset) - n_val
-    train_dataset, val_dataset = random_split(full_dataset, [n_train, n_val])
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    
-    train(net, device, train_loader, val_loader, args)
-    run.finish()
-
-def main(args):
-    """Main function for a standalone training run."""
+def run_training_session(args):
+    """
+    This function contains the logic for a single training session,
+    whether it's a standalone run or part of a sweep.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Initialize wandb based on --no-wandb flag
-    wandb_mode = "disabled" if args.no_wandb else "online"
-    # This init is for attaching to an automate.py run or for a single test run.
-    wandb.init(project="alphazero-chess", resume="allow", mode=wandb_mode)
-    if not args.no_wandb:
-        wandb.config.update(args) # Log command-line args to wandb
-
+    # In a sweep, wandb.config has the swept params. In a normal run, it has the argparse defaults.
+    config = wandb.config
+    
     # Create model and load data
     net = AlphaZeroNet().to(device)
     encoder = MoveEncoder()
     full_dataset = load_training_window(encoder)
     if not full_dataset: return
 
+    # Use the batch_size from the config (which could be from sweep or argparse)
     n_val, n_train = int(0.2 * len(full_dataset)), len(full_dataset) - int(0.2 * len(full_dataset))
     train_dataset, val_dataset = random_split(full_dataset, [n_train, n_val])
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    train(net, device, train_loader, val_loader, args)
-    
-    if wandb.run:
-        wandb.run.finish()
+    # The `train` function now takes the unified config object
+    train(net, device, train_loader, val_loader, config)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train AlphaZeroNet or run a wandb sweep.")
-    # Hyperparameters for a standalone run
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--batch_size", type=int, default=1536, help="Batch size")
-    parser.add_argument("--max_epochs", type=int, default=20, help="Max training epochs")
-    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience")
-    
-    # Flags to control execution mode
-    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging.")
-    parser.add_argument("--sweep-id", type=str, default=None, help="Wandb sweep ID to start an agent.")
+    # Add all hyperparameters here with their DEFAULTS for standalone runs
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--batch_size", type=int, default=1536)
+    parser.add_argument("--max_epochs", type=int, default=50)
+    parser.add_argument("--patience", type=int, default=3)
+
+    parser.add_argument("--no-wandb", action="store_true")
+    parser.add_argument("--sweep-id", type=str, default=None)
     
     args = parser.parse_args()
 
+    # This is the main entry point for the wandb agent
+    # It initializes wandb and then calls our training logic.
+    def sweep_entrypoint():
+        run = wandb.init() # The agent handles passing the config
+        run_training_session(run.config)
+        run.finish()
+
     if args.sweep_id:
-        # If a sweep ID is provided, start a wandb agent
         print(f"Starting wandb agent for sweep: {args.sweep_id}")
-        wandb.agent(args.sweep_id, function=sweep_iteration, project="alphazero-chess", count=10)
+        wandb.agent(args.sweep_id, function=sweep_entrypoint, project="alphazero-chess")
     else:
-        # Otherwise, run a single training session
-        main(args)
+        # For a normal run, we initialize wandb ourselves and pass the argparse object
+        wandb_mode = "disabled" if args.no_wandb else "online"
+        run = wandb.init(project="alphazero-chess", config=args, mode=wandb_mode, resume="allow")
+        run_training_session(args)
+        if run:
+            run.finish()
