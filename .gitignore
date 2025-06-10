@@ -22,3 +22,6 @@ env/
 
 # Local configuration files (if you ever add any)
 *.env
+
+# Backups
+_Backups/

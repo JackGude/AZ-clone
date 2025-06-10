@@ -6,7 +6,7 @@ import numpy as np
 import time
 from torch.amp import autocast
 from copy import deepcopy
-from state_encoder import encode_history
+from .state_encoder import encode_history
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Tree Node

@@ -20,7 +20,7 @@ parameters:
     value: 10
 
   patience:
-    value: 2
+    value: 3
 
   lr:
     # Use a log uniform distribution to effectively search across orders of magnitude.

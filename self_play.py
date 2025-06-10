@@ -17,6 +17,7 @@ from alphazero.move_encoder import MoveEncoder
 from alphazero.state_encoder import encode_history
 from alphazero.mcts import MCTS
 from alphazero.model import AlphaZeroNet
+from automate import format_time
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
@@ -41,11 +42,11 @@ def self_play_game(
     device,
     history_size=8,
     c_puct=1.41,
-    epsilon=0.25,
-    alpha=0.3,
-    temp_threshold=30,
-    max_moves=250,
-    resign_threshold=0.95
+    epsilon=0.30,
+    alpha=0.5,
+    temp_threshold=45,
+    max_moves=200,
+    resign_threshold=0.85
 ):
     """
     Plays one full game of chess via self-play using MCTS.
@@ -56,7 +57,7 @@ def self_play_game(
     
     # Use time management instead of fixed simulations
     time_limit = choose_time_limit()
-    print(f"Time limit per move: {time_limit:.1f}s")
+    print(f"Time limit per move: {time_limit:.1f}s", flush=True)
     
     mcts = MCTS(
         net, encoder, time_limit=time_limit, c_puct=c_puct, device=device,
@@ -65,18 +66,19 @@ def self_play_game(
 
     game_records = []  # Stores (history, pi_vector, player_turn) for each move
     move_number = 0
+    total_start_time = time.time()
 
     # Main game loop
     while True:
         # Check for game length cap to prevent infinitely long games
         if move_number >= max_moves:
-            outcome, outcome_type = 0.0, "draw_cap"
+            outcome, outcome_type = -0.1, "draw_cap"
             break
 
         move_number += 1
 
         # Only apply Dirichlet noise for early moves to encourage opening exploration.
-        mcts.dirichlet_alpha = alpha if move_number < temp_threshold else 0.0
+        mcts.dirichlet_alpha = alpha if move_number <= temp_threshold else 0.0
 
         # Run the MCTS search
         root, _ = mcts.run(env)
@@ -116,6 +118,8 @@ def self_play_game(
             elif reward == -1.0: outcome_type = "checkmate_black"
             else: outcome_type = "draw_game"
             break
+        
+    print(f"Game finished. Moves: {move_number}. Outcome: {outcome_type}. Time: {format_time(time.time() - total_start_time)}", flush=True)
 
     # After the game, prepare the training examples
     examples = []
@@ -144,9 +148,9 @@ def manage_replay_buffer():
         while len(game_files) > MAX_GAMES_IN_BUFFER:
             file_to_delete = game_files.pop(0)
             os.remove(file_to_delete)
-            print(f"Buffer full. Deleted oldest game: {os.path.basename(file_to_delete)}")
+            print(f"Buffer full. Deleted oldest game: {os.path.basename(file_to_delete)}", flush=True)
     except Exception as e:
-        print(f"Warning: Could not manage replay buffer. Error: {e}")
+        print(f"Warning: Could not manage replay buffer. Error: {e}", flush=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main Execution Block
@@ -154,10 +158,15 @@ def manage_replay_buffer():
 
 def main(args):
     """Orchestrates the self-play data generation process."""
-    
-    # Initialize wandb if not disabled
-    wandb_mode = "disabled" if args.no_wandb else "online"
-    wandb.init(project="alphazero-chess", resume="allow", mode=wandb_mode)
+
+    # Initialize wandb with the new format
+    wandb.init(
+        project="alphazero-chess",
+        group=args.gen_id,
+        name=f"{args.gen_id}-self-play",
+        job_type="self-play",
+        mode="disabled" if args.no_wandb else "online"
+    )
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -166,9 +175,9 @@ def main(args):
     checkpoint_path = os.path.join(CHECKPOINT_DIR, "best.pth")
     if os.path.exists(checkpoint_path):
         net.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
-        print(f"Loaded best weights from '{checkpoint_path}'")
+        print(f"Loaded best weights from '{checkpoint_path}'", flush=True)
     else:
-        print(f"No checkpoint found at '{checkpoint_path}'; using randomly initialized model.")
+        print(f"No checkpoint found at '{checkpoint_path}'; using randomly initialized model.", flush=True)
     net.eval()
 
     encoder = MoveEncoder()
@@ -178,7 +187,7 @@ def main(args):
     game_lengths = []
 
     for i in range(args.num_games):
-        print(f"\n=== Starting game {i+1}/{args.num_games} ===")
+        print(f"\n=== Starting game {i+1}/{args.num_games} ===", flush=True)
         
         game_examples, outcome_type, game_length = self_play_game(
             net, encoder, device=device
@@ -210,13 +219,18 @@ def main(args):
     for k, v in summary_counts.items():
         selfplay_summary[f"outcome_{k}"] = v
         
+    print(f"\nSelf-play session complete. Total time: {format_time(total_duration)}. Logged summary to wandb.", flush=True)
+
     wandb.log(selfplay_summary)
-    
-    print("\nSelf-play session complete. Logged summary to wandb.")
+
+    # Finish the wandb run
+    if wandb.run:
+        wandb.run.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run self-play games to generate training data.")
     parser.add_argument("--num_games", type=int, default=100, help="Number of self-play games to generate.")
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging for this run.")
+    parser.add_argument("--gen-id", type=str, required=True, help="Generation ID for this run.")
     args = parser.parse_args()
     main(args)
