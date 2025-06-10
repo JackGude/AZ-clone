@@ -18,17 +18,20 @@ from alphazero.state_encoder import encode_history
 from alphazero.mcts import MCTS
 from alphazero.model import AlphaZeroNet
 from automate import format_time
+import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Load openings from CSV
+SELFPLAY_OPENINGS = pd.read_csv('openings/selfplay_openings.csv')
 # The directory to store individual game files.
 REPLAY_DIR = "replay_buffer"
 # The maximum number of game files to keep on disk.
 MAX_GAMES_IN_BUFFER = 2000
 os.makedirs(REPLAY_DIR, exist_ok=True)
-
+# The directory to store checkpoints.
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
@@ -43,7 +46,7 @@ def self_play_game(
     history_size=8,
     c_puct=1.41,
     epsilon=0.30,
-    alpha=0.5,
+    alpha=0.50,
     temp_threshold=45,
     max_moves=200,
     resign_threshold=0.85
@@ -55,9 +58,10 @@ def self_play_game(
     env = ChessEnv(history_size=history_size)
     env.reset()
     
+    setup_opening(env)
+    
     # Use time management instead of fixed simulations
-    time_limit = choose_time_limit()
-    print(f"Time limit per move: {time_limit:.1f}s", flush=True)
+    time_limit = choose_time_limit()    
     
     mcts = MCTS(
         net, encoder, time_limit=time_limit, c_puct=c_puct, device=device,
@@ -66,7 +70,7 @@ def self_play_game(
 
     game_records = []  # Stores (history, pi_vector, player_turn) for each move
     move_number = 0
-    total_start_time = time.time()
+    start_time = time.time()
 
     # Main game loop
     while True:
@@ -119,7 +123,7 @@ def self_play_game(
             else: outcome_type = "draw_game"
             break
         
-    print(f"Game finished. Moves: {move_number}. Outcome: {outcome_type}. Time: {format_time(time.time() - total_start_time)}", flush=True)
+    print(f"Game finished. Moves: {move_number}. Outcome: {outcome_type}. Time: {format_time(time.time() - start_time)}", flush=True)
 
     # After the game, prepare the training examples
     examples = []
@@ -132,13 +136,44 @@ def self_play_game(
 
     return examples, outcome_type, move_number
 
+def setup_opening(env):
+        """
+        Sets up the opening position for a self-play game.
+        Has a 75% chance to use the opening book, otherwise uses standard start.
+        
+        Args:
+            env: The chess environment to set up
+            
+        Returns:
+            str: The name of the opening that was selected
+        """
+        opening_name = "standard opening"
+        
+        if SELFPLAY_OPENINGS is not None and not SELFPLAY_OPENINGS.empty and random.random() < 0.75:
+            random_opening = SELFPLAY_OPENINGS.sample(n=1).iloc[0]
+            move_string = random_opening['moves']
+            
+            # Get a board object with history, not just a FEN
+            starting_board = get_board_from_moves(move_string)
+            env.set_board(starting_board) # Set the environment's board
+            
+            opening_name = random_opening.get('name', 'Unknown Opening')
+        else:
+            # The environment is already reset to the standard start
+            pass
+
+        print(f"--- Starting new self-play game from opening: {opening_name} ---")
 
 def choose_time_limit():
     """Randomly chooses a time limit to add variety to the training data."""
+    time_limit = 0.0
     if random.random() < 0.5:
-        return random.uniform(0.5, 1.5)  # Fast, "intuitive" moves
+        time_limit = random.uniform(0.5, 1.5)  # Fast, "intuitive" moves
     else:
-        return random.uniform(2.0, 4.0)   # More "calculated" moves
+        time_limit = random.uniform(2.0, 4.0)   # More "calculated" moves
+
+    print(f"Time limit per move: {time_limit:.1f}s", flush=True)
+    return time_limit
 
 
 def manage_replay_buffer():
@@ -151,6 +186,20 @@ def manage_replay_buffer():
             print(f"Buffer full. Deleted oldest game: {os.path.basename(file_to_delete)}", flush=True)
     except Exception as e:
         print(f"Warning: Could not manage replay buffer. Error: {e}", flush=True)
+
+def get_board_from_moves(move_string):
+    """
+    Takes a space-separated string of moves in SAN, plays them on a board,
+    and returns the final chess.Board object with a full move history.
+    """
+    board = chess.Board()
+    try:
+        for move in move_string.split(' '):
+            board.push_san(move)
+        return board
+    except (ValueError, IndexError):
+        # Return a fresh board if moves are invalid
+        return chess.Board()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main Execution Block

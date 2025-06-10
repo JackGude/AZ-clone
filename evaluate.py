@@ -7,6 +7,7 @@ import argparse
 import time
 import json
 import wandb
+import random
 from datetime import datetime
 from automate import format_time
 
@@ -14,6 +15,7 @@ from alphazero.env import ChessEnv
 from alphazero.model import AlphaZeroNet
 from alphazero.mcts import MCTS
 from alphazero.move_encoder import MoveEncoder
+from openings.evaluation_openings import OPENING_BOOK_FENS
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
@@ -43,7 +45,9 @@ def play_match(net_white, net_black, encoder, time_limit, c_puct, device):
         float: The outcome of the game. +1.0 if White wins, -1.0 if Black wins, 0.0 for a draw.
     """
     env = ChessEnv(history_size=8)
-    env.reset()
+    opening_name, opening_fen = OPENING_BOOK_FENS[random.randint(0, len(OPENING_BOOK_FENS) - 1)]
+    env.set_board(opening_fen)
+    print(f"Starting game with opening: {opening_name}", flush=True)
 
     # Create separate MCTS instances for each player.
     # Dirichlet noise is disabled (dirichlet_alpha=0) for deterministic evaluation.
@@ -109,29 +113,39 @@ def evaluate(
 
     # Play the specified number of games, alternating colors
     for i in range(num_games):
+        game_start_time = time.time()
         # New network plays as White in even-numbered games
         if i % 2 == 0:
-            print(f"  Game {i+1}/{num_games}... (New plays White)", flush=True)
+            print(f"  Game {i+1}/{num_games}... (New plays as White)", flush=True)
             reward = play_match(net_new, net_old, encoder, time_limit, c_puct, device)
             results.append(reward)
         # New network plays as Black in odd-numbered games
         else:
-            print(f"  Game {i+1}/{num_games}... (New plays Black)", flush=True)
+            print(f"  Game {i+1}/{num_games}... (New plays as Black)", flush=True)
             reward = play_match(net_old, net_new, encoder, time_limit, c_puct, device)
             # The reward is from White's perspective. We negate it to keep
             # the score relative to the new network.
             results.append(-reward)
         
-        print(f"  Game {i+1} finished. Current score (New vs Old): {sum(r for r in results if r==1)} - {sum(1 for r in results if r==-1)}", flush=True)
-        print(f"Time: {format_time(time.time() - total_start_time)}", flush=True)
+        # Print the outcome of the game using the last result in the list
+        last_result = results[-1]
+        if last_result == 1.0:
+            outcome = "New model won"
+        elif last_result == -1.0:
+            outcome = "Old model won"
+        else:
+            outcome = "Draw"
+        print(f"  Game {i+1} finished. Outcome: {outcome}. Current score (New vs Old): {sum(r for r in results if r==1)} - {sum(1 for r in results if r==-1)}", flush=True)
+        print(f"Time: {format_time(time.time() - game_start_time)}", flush=True)
 
+    total_game_time = time.time() - total_start_time
     # Calculate final statistics from the perspective of the new network
     wins = sum(1 for r in results if r == 1.0)
     draws = sum(1 for r in results if r == 0.0)
     losses = sum(1 for r in results if r == -1.0)
-    
     # Win rate is calculated as wins + half of the draws
     win_rate = (wins + 0.5 * draws) / num_games if num_games > 0 else 0.0
+    avg_game_time = total_game_time / num_games if num_games > 0 else 0.0
 
     print("\n=== Evaluation Summary ===", flush=True)
     print(f"Results for NEW model vs OLD model: {wins} Wins, {losses} Losses, {draws} Draws", flush=True)
@@ -141,6 +155,7 @@ def evaluate(
     if wandb.run:
         wandb.log({
             "eval_num_games": num_games,
+            "avg_game_time": avg_game_time,
             "eval_win_rate": win_rate,
             "eval_wins": wins,
             "eval_draws": draws,
@@ -150,7 +165,7 @@ def evaluate(
     # Print the final win rate in a machine-readable format for automate.py to capture
     print(f"FINAL_WIN_RATE: {win_rate}", flush=True)
 
-    print(f"Evaluation session complete. Time: {format_time(time.time() - total_start_time)}. Logged summary to wandb.", flush=True)
+    print(f"Evaluation session complete. Time: {format_time(total_game_time)}. Logged summary to wandb.", flush=True)
 
 
 def main(args):

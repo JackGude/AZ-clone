@@ -17,6 +17,24 @@ class ChessEnv:
         self.history.append(self.board.copy())
         return self.board
 
+    def set_board(self, board_or_fen):
+        """
+        Set up the board with either a FEN string or a chess.Board object.
+        
+        Args:
+            board_or_fen: Either a FEN string or a chess.Board object
+        """
+        if isinstance(board_or_fen, str):
+            self.board = chess.Board(board_or_fen)
+        elif isinstance(board_or_fen, chess.Board):
+            self.board = board_or_fen.copy()
+        else:
+            raise ValueError("board_or_fen must be either a FEN string or a chess.Board object")
+        
+        self._reset_history()
+        self.history.append(self.board.copy())
+        return self.board
+
     def legal_moves(self):
         return list(self.board.legal_moves)
 
