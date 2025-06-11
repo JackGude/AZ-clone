@@ -20,7 +20,7 @@ OPENING_BOOK_FENS = [
     # Queen's Gambit Accepted
     ("Queen's Gambit Accepted", "rnbqkbnr/pp2pppp/8/2pp4/2PP4/8/PP2PPPP/RNBQKBNR w KQkq - 0 3"),
     # Slav Defense
-    ("Slav Defense", "rnbqkb1r/pp2pppp/2d2n2/2pp4/2PP4/2N2N2/PP2PPPP/R1BQKB1R w KQkq - 3 5"),
+    ("Slav Defense", "rnbqkb1r/pp2pppp/2p2n2/2pp4/2PP4/2N2N2/PP2PPPP/R1BQKB1R w KQkq - 3 5"),
     # King's Indian Defense
     ("King's Indian Defense", "rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP3PPP/R1BQKB1R w KQ - 1 6"),
     # Nimzo-Indian Defense

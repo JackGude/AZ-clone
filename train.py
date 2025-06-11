@@ -120,6 +120,7 @@ def train(net, device, train_loader, val_loader, config):
     total_start_time = time.time()
 
     for epoch in range(1, config.max_epochs + 1):
+        epoch_start_time = time.time()
         # --- Training Phase ---
         net.train()
         total_train_loss, train_batches = 0.0, 0
@@ -151,7 +152,7 @@ def train(net, device, train_loader, val_loader, config):
         scheduler.step(avg_val_loss)
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch:02d}/{config.max_epochs} | Val Loss: {avg_val_loss:.4f} | Train Loss: {avg_train_loss:.4f} | LR: {current_lr:.1e}", flush=True)
-        print(f"Time: {format_time(time.time() - total_start_time)}", flush=True)
+        print(f"Time: {format_time(time.time() - epoch_start_time)}", flush=True)
         wandb.log({"epoch": epoch, "val_loss": avg_val_loss, "train_loss": avg_train_loss, "learning_rate": current_lr})
         
         # --- Early Stopping & Checkpointing ---

@@ -147,7 +147,7 @@ def setup_opening(env):
         Returns:
             str: The name of the opening that was selected
         """
-        opening_name = "standard opening"
+        opening_name = "Standard Opening"
         
         if SELFPLAY_OPENINGS is not None and not SELFPLAY_OPENINGS.empty and random.random() < 0.75:
             random_opening = SELFPLAY_OPENINGS.sample(n=1).iloc[0]

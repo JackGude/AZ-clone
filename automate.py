@@ -22,11 +22,11 @@ CANDIDATE_PATH     = os.path.join(CHECKPOINT_DIR, "candidate.pth")
 
 # --- Pipeline Parameters ---
 # You can tune these values to control the training process.
-NUM_SELFPLAY_GAMES = 50    # Number of games to generate per generation
+NUM_SELFPLAY_GAMES = 100    # Number of games to generate per generation
 WIN_THRESHOLD      = 0.50   # Win rate needed for a candidate to be promoted (50% means not worse)
-NUM_EVAL_GAMES     = 40     # Number of games to play to compare models
-EVAL_TIME_LIMIT    = 5      # Time in seconds per move for evaluation games
-WARMUP_GENS        = 3      # Number of initial generations to run without evaluation to bootstrap a model
+NUM_EVAL_GAMES     = 12     # Number of games to play to compare models
+EVAL_TIME_LIMIT    = 20      # Time in seconds per move for evaluation games
+WARMUP_GENS        = 10      # Number of initial generations to run without evaluation to bootstrap a model
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Pipeline Steps
