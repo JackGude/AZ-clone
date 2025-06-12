@@ -1,1 +1,0 @@
-from .evaluation_openings import OPENING_BOOK_FENS

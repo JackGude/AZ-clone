@@ -15,6 +15,7 @@ from datetime import datetime
 SELFPLAY_SCRIPT    = "self_play.py"
 TRAIN_SCRIPT       = "train.py"
 EVALUATE_SCRIPT    = "evaluate.py"
+STOP_FILE          = "stop.txt"     # If this file exists, the automation will stop after the current generation
 
 CHECKPOINT_DIR     = "checkpoints"
 BEST_CHECKPOINT    = os.path.join(CHECKPOINT_DIR, "best.pth")
@@ -147,8 +148,13 @@ def format_time(seconds):
 def main(args):
     """The main automation loop that drives the generations of self-play and training."""
     
-    generation = args.start_generation
+    # This check ensures that if a 'stop.txt' was left over from a previous
+    # run, it won't prevent the script from starting.
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    if os.path.exists(STOP_FILE):
+        os.remove(STOP_FILE)  # Clean up the file for the next time
+
+    generation = args.start_generation
 
     print(f"\n{'#'*20} Starting AlphaZero Training Loop {'#'*20}")
     print(f"Starting from generation {generation}")
@@ -183,6 +189,12 @@ def main(args):
             promote_candidate(win_rate)
         
         print(f"\n{'#'*20} Completed {generation_id_str} {'#'*20}\n")
+
+        if os.path.exists(STOP_FILE):
+            print("\n[AUTO] 'stop.txt' file detected. Shutting down gracefully after this generation.", flush=True)
+            os.remove(STOP_FILE)  # Clean up the file for the next time
+            break # Exit the while loop
+
         generation += 1
 
 if __name__ == "__main__":

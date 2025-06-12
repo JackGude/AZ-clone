@@ -45,9 +45,9 @@ def self_play_game(
     device,
     history_size=8,
     c_puct=1.41,
-    epsilon=0.30,
-    alpha=0.50,
-    temp_threshold=45,
+    epsilon=0.25,
+    alpha=0.25,
+    temp_threshold=30,
     max_moves=200,
     resign_threshold=0.85
 ):
@@ -162,7 +162,7 @@ def setup_opening(env):
             # The environment is already reset to the standard start
             pass
 
-        print(f"--- Starting new self-play game from opening: {opening_name} ---")
+        print(f"--- Starting from opening: {opening_name} ---", flush=True)
 
 def choose_time_limit():
     """Randomly chooses a time limit to add variety to the training data."""
@@ -262,7 +262,7 @@ def main(args):
     
     selfplay_summary = {
         "selfplay_total_games": args.num_games,
-        "selfplay_total_time_s": total_duration,
+        "total_selfplay_time": total_duration,
         "selfplay_avg_game_length": avg_length,
     }
     for k, v in summary_counts.items():

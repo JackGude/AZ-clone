@@ -8,6 +8,7 @@ import time
 import json
 import wandb
 import random
+import csv
 from datetime import datetime
 from automate import format_time
 
@@ -15,7 +16,6 @@ from alphazero.env import ChessEnv
 from alphazero.model import AlphaZeroNet
 from alphazero.mcts import MCTS
 from alphazero.move_encoder import MoveEncoder
-from openings.evaluation_openings import OPENING_BOOK_FENS
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
@@ -29,6 +29,13 @@ DEFAULT_TIME_LIMIT = 5
 # number of moves, the game is called early.
 ADJUDICATION_THRESHOLD = 0.90 # A 90% chance of winning
 ADJUDICATION_PATIENCE = 3     # Must hold the advantage for 3 consecutive moves
+
+# Load openings from CSV
+OPENING_BOOK_FENS = []
+with open('openings/evaluation_openings.csv', 'r') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        OPENING_BOOK_FENS.append((row['name'], row['fen']))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Game Playing Logic
@@ -86,7 +93,23 @@ def play_match(net_white, net_black, encoder, time_limit, c_puct, device, openin
         for move, child in root.children.items():
             counts[encoder.encode(move)] = child.N
         
+        if counts.sum() == 0:
+            return 0.0
+
         move = encoder.decode(int(counts.argmax().item()))
+
+        # --- Progress Tracking Line ---
+        try:
+            # Get the move in Standard Algebraic Notation (e.g., "Nf3") for easy reading
+            move_san = env.board.san(move)
+            # The Q-value from the root node represents the model's confidence from this position
+            q_value = root.Q
+            player_turn_str = "White" if env.board.turn == chess.WHITE else "Black"
+            # Print a formatted status update
+            print(f"    {env.board.fullmove_number}. {player_turn_str}: {move_san:<6} (Eval: {q_value:+.3f})", flush=True)
+        except Exception:
+            # Fallback in case SAN conversion fails for some reason
+            print(f"    Playing move: {move}", flush=True)
 
         _, reward, done = env.step(move)
         if done:
@@ -204,14 +227,14 @@ def evaluate(
         print(f"  Game {i+1} finished. Outcome: {outcome}. Current score (New vs Old): {sum(r for r in results if r==1)} - {sum(1 for r in results if r==-1)}", flush=True)
         print(f"Time: {format_time(time.time() - game_start_time)}", flush=True)
 
-    total_game_time = time.time() - total_start_time
+    total_eval_time = time.time() - total_start_time
     # Calculate final statistics from the perspective of the new network
     wins = sum(1 for r in results if r == 1.0)
     draws = sum(1 for r in results if r == 0.0)
     losses = sum(1 for r in results if r == -1.0)
     # Win rate is calculated as wins + half of the draws
     win_rate = (wins + 0.5 * draws) / num_games if num_games > 0 else 0.0
-    avg_game_time = total_game_time / num_games if num_games > 0 else 0.0
+    avg_game_time = total_eval_time / num_games if num_games > 0 else 0.0
 
     print("\n=== Evaluation Summary ===", flush=True)
     print(f"Results for NEW model vs OLD model: {wins} Wins, {losses} Losses, {draws} Draws", flush=True)
@@ -222,6 +245,7 @@ def evaluate(
         wandb.log({
             "eval_num_games": num_games,
             "avg_game_time": avg_game_time,
+            "total_eval_time": total_eval_time,
             "eval_win_rate": win_rate,
             "eval_wins": wins,
             "eval_draws": draws,
@@ -231,7 +255,7 @@ def evaluate(
     # Print the final win rate in a machine-readable format for automate.py to capture
     print(f"FINAL_WIN_RATE: {win_rate}", flush=True)
 
-    print(f"Evaluation session complete. Time: {format_time(total_game_time)}. Logged summary to wandb.", flush=True)
+    print(f"Evaluation session complete. Time: {format_time(total_eval_time)}. Logged summary to wandb.", flush=True)
 
 
 def main(args):

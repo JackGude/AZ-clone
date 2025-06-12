@@ -112,7 +112,8 @@ def train(net, device, train_loader, val_loader, config):
     """
     is_cuda = (device == "cuda")
     optimizer = torch.optim.AdamW(net.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=1)
+    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.max_epochs)
     
     best_val_loss = float('inf')
     best_epoch = -1
@@ -149,11 +150,19 @@ def train(net, device, train_loader, val_loader, config):
                 val_batches += 1
         avg_val_loss = total_val_loss / val_batches if val_batches > 0 else 0
         
-        scheduler.step(avg_val_loss)
+        #scheduler.step(avg_val_loss)
+        scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch:02d}/{config.max_epochs} | Val Loss: {avg_val_loss:.4f} | Train Loss: {avg_train_loss:.4f} | LR: {current_lr:.1e}", flush=True)
         print(f"Time: {format_time(time.time() - epoch_start_time)}", flush=True)
-        wandb.log({"epoch": epoch, "val_loss": avg_val_loss, "train_loss": avg_train_loss, "learning_rate": current_lr})
+        wandb.log(
+            {
+                "epoch": epoch, 
+                "validation_loss": avg_val_loss, 
+                "training_loss": avg_train_loss, 
+                "learning_rate": current_lr, 
+                "epoch_time": time.time() - epoch_start_time,
+            })
         
         # --- Early Stopping & Checkpointing ---
         if avg_val_loss < best_val_loss:
@@ -165,21 +174,23 @@ def train(net, device, train_loader, val_loader, config):
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= config.patience:
-                print(f"  Stopping early as validation loss has not improved for {config.patience} epochs.", flush=True)
+                print(f"  Stopping early as validation loss has not improved for {config.patience} epochs.", flush=True)                
                 break
     
+    total_train_time = time.time() - total_start_time
     # --- Artifact Logging ---
     if best_epoch != -1:
+        wandb.log({"best_validation_loss": best_val_loss, "total_training_time": total_train_time})
         print("--- Logging best model to wandb artifacts ---", flush=True)
         artifact = wandb.Artifact(
             name=f"model-{wandb.run.id}", # Name the artifact after the unique run ID
             type="model",
-            metadata={"best_epoch": best_epoch, "validation_loss": best_val_loss}
+            metadata={"best_epoch": best_epoch, "best_validation_loss": best_val_loss}
         )
         artifact.add_file(os.path.join(CHECKPOINT_DIR, "candidate.pth"))
         wandb.run.log_artifact(artifact)
     
-    print(f"Training session complete. Time: {format_time(time.time() - total_start_time)}. Logged summary to wandb.", flush=True)
+    print(f"Training session complete. Time: {format_time(total_train_time)}. Logged summary to wandb.", flush=True)
 
 # --- Main Execution Block ---
 def main():
@@ -191,60 +202,51 @@ def main():
     parser = argparse.ArgumentParser()
     # Define ALL parameters here. The agent will pass values for the ones being swept.
     # The others will correctly use their default values.
-    parser.add_argument("--lr", type=float, default=0.007135)
-    parser.add_argument("--weight_decay", type=float, default=0.00022968)
-    parser.add_argument("--batch_size", type=int, default=1536) # Your fixed batch size
+    parser.add_argument("--lr", type=float, default=0.00078769) # From sweep
+    parser.add_argument("--weight_decay", type=float, default=0.000076082) # From sweep
+    parser.add_argument("--batch_size", type=int, default=1536)
     parser.add_argument("--max_epochs", type=int, default=20)
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--no-wandb", action="store_true") # For local testing
     parser.add_argument("--gen-id", type=str, help="Generation ID for this run. Required in pipeline mode, optional in sweep mode.")
     args = parser.parse_args()
 
-    # Initialize wandb with the new format
+    # Initialize wandb
+    wandb_kwargs = {
+        "project": "alphazero-chess",
+        "config": args,
+        "mode": "disabled" if args.no_wandb else "online"
+    }
     if args.gen_id:
-        # Pipeline mode: Use the provided generation ID
-        wandb.init(
-            project="alphazero-chess",
-            group=args.gen_id,
-            name=f"{args.gen_id}-training",
-            job_type="training",
-            config=args,  # Pass argparse values to wandb for sweeps
-            mode="disabled" if args.no_wandb else "online"
-        )
-    else:
-        # Sweep mode: Create a standalone run
-        wandb.init(
-            project="alphazero-chess",
-            config=args,  # Pass argparse values to wandb for sweeps
-            mode="disabled" if args.no_wandb else "online"
-        )
+        wandb_kwargs.update({
+            "group": args.gen_id,
+            "name": f"{args.gen_id}-training",
+            "job_type": "training"
+        })
+    run = wandb.init(**wandb_kwargs)
     
-    # The final config is a merge of sweep params and argparse defaults
-    config = wandb.config
+    try:
+        config = wandb.config
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        net = AlphaZeroNet().to(device)
+        encoder = MoveEncoder()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    net = AlphaZeroNet().to(device)
-    encoder = MoveEncoder()
+        full_dataset = load_training_window(encoder)
+        if not full_dataset:
+            print("No data found, exiting run.", flush=True)
+            return
 
-    full_dataset = load_training_window(encoder)
-    if not full_dataset:
-        print("No data found, exiting run.", flush=True)
+        n_val = int(0.2 * len(full_dataset))
+        n_train = len(full_dataset) - n_val
+        train_dataset, val_dataset = random_split(full_dataset, [n_train, n_val])
+        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=6, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=6, pin_memory=True)
+        
+        train(net, device, train_loader, val_loader, config)
 
-        if wandb.run: 
-            wandb.run.finish()
-        return
-
-    n_val = int(0.2 * len(full_dataset))
-    n_train = len(full_dataset) - n_val
-    train_dataset, val_dataset = random_split(full_dataset, [n_train, n_val])
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=6, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=6, pin_memory=True)
-    
-    train(net, device, train_loader, val_loader, config)
-
-    # Finish the wandb run
-    if wandb.run:
-        wandb.run.finish()
+    finally:
+        if run:
+            run.finish()
 
 if __name__ == "__main__":
     main()
