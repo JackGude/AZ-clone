@@ -1,4 +1,5 @@
 # state_encoder.py
+
 import torch
 import chess
 from typing import Deque, List
@@ -15,7 +16,7 @@ PIECE_TO_PLANE = {
     chess.KING:   5,
 }
 
-def encode_history(history: Deque[chess.Board], history_size: int = 8) -> torch.FloatTensor:
+def encode_history(history: Deque[chess.Board]) -> torch.FloatTensor:
     """
     Builds a (119, 8, 8) tensor representation of the last `history_size` moves.
 
@@ -32,7 +33,7 @@ def encode_history(history: Deque[chess.Board], history_size: int = 8) -> torch.
       - 1 plane: The half-move clock (for the 50-move rule).
     Total planes = 112 + 7 = 119.
     """
-    T = history_size
+    T = 8
     assert len(history) <= T, "History deque may be shorter than T, but never longer"
     
     # Calculate the total number of channels (planes) in the final tensor.
@@ -41,8 +42,8 @@ def encode_history(history: Deque[chess.Board], history_size: int = 8) -> torch.
 
     # --- 1) Stack the last T frames ---
     # Pad the history with `None` if the game has fewer than T moves.
-    padded: List[chess.Board] = [None] * (T - len(history)) + list(history)
-    for i, b in enumerate(padded):
+    for i, fen_string in enumerate(history):
+        b = chess.Board(fen_string)
         base = i * 14 # Calculate the starting plane index for this frame
         if b is None:
             continue # Skip empty (padded) frames
@@ -63,7 +64,8 @@ def encode_history(history: Deque[chess.Board], history_size: int = 8) -> torch.
         if is_3_rep: x[base + 13].fill_(1.0)
 
     # --- 2) Add the 7 extra planes for the CURRENT position ---
-    curr = history[-1] # The current board is the last one in the history
+    current_fen = history[-1]
+    curr = chess.Board(current_fen) # The current board is the last one in the history
     extra_base = T * 14
 
     # Plane 112: Side to move (1.0 for White, 0.0 for Black)

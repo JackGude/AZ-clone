@@ -12,6 +12,16 @@ import csv
 from datetime import datetime
 from automate import format_time
 
+from config import (
+    # Project and File Paths
+    PROJECT_NAME,
+    # Evaluation Config
+    DEFAULT_NUM_EVAL_GAMES,
+    DEFAULT_EVAL_TIME_LIMIT,
+    DEFAULT_EVAL_CPUCT,
+    ADJUDICATION_THRESHOLD,
+    ADJUDICATION_PATIENCE
+)
 from alphazero.env import ChessEnv
 from alphazero.model import AlphaZeroNet
 from alphazero.mcts import MCTS
@@ -20,15 +30,6 @@ from alphazero.move_encoder import MoveEncoder
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-
-CHECKPOINT_DIR = "checkpoints"
-# Default time limit for evaluation games if not provided via command line
-DEFAULT_TIME_LIMIT = 5
-
-# If a model's win-rate estimate (Q-value) is above this threshold for a certain
-# number of moves, the game is called early.
-ADJUDICATION_THRESHOLD = 0.90 # A 90% chance of winning
-ADJUDICATION_PATIENCE = 3     # Must hold the advantage for 3 consecutive moves
 
 # Load openings from CSV
 OPENING_BOOK_FENS = []
@@ -41,7 +42,7 @@ with open('openings/evaluation_openings.csv', 'r') as f:
 #  Game Playing Logic
 # ─────────────────────────────────────────────────────────────────────────────
 
-def play_match(net_white, net_black, encoder, time_limit, c_puct, device, opening_info=None):
+def play_match(net_white, net_black, encoder, time_limit, device, opening_info=None):
     """
     Plays a single game of chess between two neural networks.
 
@@ -50,21 +51,20 @@ def play_match(net_white, net_black, encoder, time_limit, c_puct, device, openin
         net_black (nn.Module): The network playing as Black.
         encoder (MoveEncoder): The move encoder/decoder utility.
         time_limit (int): The time in seconds for each MCTS search.
-        c_puct (float): The exploration constant for MCTS.
         device (str): The device to run inference on ('cpu' or 'cuda').
 
     Returns:
         float: The outcome of the game. +1.0 if White wins, -1.0 if Black wins, 0.0 for a draw.
     """
-    env = ChessEnv(history_size=8)
+    env = ChessEnv()
     opening_name, opening_fen = opening_info
     env.set_board(opening_fen)
     print(f"Starting game with opening: {opening_name}", flush=True)
 
     # Create separate MCTS instances for each player.
     # Dirichlet noise is disabled (dirichlet_alpha=0) for deterministic evaluation.
-    mcts_white = MCTS(net_white, encoder, time_limit=time_limit, c_puct=c_puct, device=device, dirichlet_alpha=0)
-    mcts_black = MCTS(net_black, encoder, time_limit=time_limit, c_puct=c_puct, device=device, dirichlet_alpha=0)
+    mcts_white = MCTS(net_white, encoder, time_limit=time_limit, c_puct=DEFAULT_EVAL_CPUCT, device=device, dirichlet_alpha=0)
+    mcts_black = MCTS(net_black, encoder, time_limit=time_limit, c_puct=DEFAULT_EVAL_CPUCT, device=device, dirichlet_alpha=0)
 
     white_adjudication_streak = 0
     black_adjudication_streak = 0
@@ -172,7 +172,6 @@ def evaluate(
     checkpoint_new,
     num_games,
     time_limit,
-    c_puct,
     device
 ):
     """
@@ -206,12 +205,12 @@ def evaluate(
         # New network plays as White in even-numbered games
         if i % 2 == 0:
             print(f"  Game {i+1}/{num_games}... (New plays as White)", flush=True)
-            reward = play_match(net_new, net_old, encoder, time_limit, c_puct, device, opening_info=opening_info)
+            reward = play_match(net_new, net_old, encoder, time_limit, device, opening_info=opening_info)
             results.append(reward)
         # New network plays as Black in odd-numbered games
         else:
             print(f"  Game {i+1}/{num_games}... (New plays as Black)", flush=True)
-            reward = play_match(net_old, net_new, encoder, time_limit, c_puct, device, opening_info=opening_info)
+            reward = play_match(net_old, net_new, encoder, time_limit, device, opening_info=opening_info)
             # The reward is from White's perspective. We negate it to keep
             # the score relative to the new network.
             results.append(-reward)
@@ -255,8 +254,6 @@ def evaluate(
     # Print the final win rate in a machine-readable format for automate.py to capture
     print(f"FINAL_WIN_RATE: {win_rate}", flush=True)
 
-    print(f"Evaluation session complete. Time: {format_time(total_eval_time)}. Logged summary to wandb.", flush=True)
-
 
 def main(args):
     """Main function for standalone execution."""
@@ -264,7 +261,7 @@ def main(args):
 
     # Initialize wandb with the new format
     wandb.init(
-        project="alphazero-chess",
+        project=PROJECT_NAME,
         group=args.gen_id,
         name=f"{args.gen_id}-evaluation",
         job_type="evaluation",
@@ -276,7 +273,6 @@ def main(args):
         checkpoint_new=args.new,
         num_games=args.games,
         time_limit=args.time_limit,
-        c_puct=args.cpuct,
         device=device
     )
 
@@ -287,9 +283,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate two AlphaZeroNet checkpoints head-to-head.")
     parser.add_argument("--old",   type=str, required=True, help="Path to the 'old' incumbent best checkpoint")
     parser.add_argument("--new",   type=str, required=True, help="Path to the 'new' challenger checkpoint")
-    parser.add_argument("--games", type=int, default=20, help="Number of games to play")
-    parser.add_argument("--time-limit", type=int, default=DEFAULT_TIME_LIMIT, help="Time limit in seconds per move")
-    parser.add_argument("--cpuct", type=float, default=1.0, help="PUCT constant for MCTS")
+    parser.add_argument("--games", type=int, default=DEFAULT_NUM_EVAL_GAMES, help="Number of games to play")
+    parser.add_argument("--time-limit", type=int, default=DEFAULT_EVAL_TIME_LIMIT, help="Time limit in seconds per move")
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging.")
     parser.add_argument("--gen-id", type=str, required=True, help="Generation ID for this run.")
     args = parser.parse_args()

@@ -2,32 +2,34 @@
 
 import os
 import sys
+import time
 import subprocess
 import shutil
 import argparse
 from datetime import datetime
+from config import (
+    # Project and File Paths
+    CHECKPOINT_DIR,
+    BEST_CHECKPOINT,
+    CANDIDATE_PATH,
+    SELFPLAY_SCRIPT,
+    TRAIN_SCRIPT,
+    EVALUATE_SCRIPT,
+    STOP_FILE,
+    # Automation Pipeline Config
+    NUM_SELFPLAY_GAMES,
+    NUM_EVAL_GAMES,
+    WIN_THRESHOLD,
+    WARMUP_GENS,
+    EVAL_TIME_LIMIT    
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-# --- File Paths and Scripts ---
-SELFPLAY_SCRIPT    = "self_play.py"
-TRAIN_SCRIPT       = "train.py"
-EVALUATE_SCRIPT    = "evaluate.py"
-STOP_FILE          = "stop.txt"     # If this file exists, the automation will stop after the current generation
-
-CHECKPOINT_DIR     = "checkpoints"
-BEST_CHECKPOINT    = os.path.join(CHECKPOINT_DIR, "best.pth")
-CANDIDATE_PATH     = os.path.join(CHECKPOINT_DIR, "candidate.pth")
-
-# --- Pipeline Parameters ---
-# You can tune these values to control the training process.
-NUM_SELFPLAY_GAMES = 100    # Number of games to generate per generation
-WIN_THRESHOLD      = 0.50   # Win rate needed for a candidate to be promoted (50% means not worse)
-NUM_EVAL_GAMES     = 12     # Number of games to play to compare models
-EVAL_TIME_LIMIT    = 20      # Time in seconds per move for evaluation games
-WARMUP_GENS        = 10      # Number of initial generations to run without evaluation to bootstrap a model
+# The directory to store checkpoints.
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Pipeline Steps
@@ -150,7 +152,6 @@ def main(args):
     
     # This check ensures that if a 'stop.txt' was left over from a previous
     # run, it won't prevent the script from starting.
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     if os.path.exists(STOP_FILE):
         os.remove(STOP_FILE)  # Clean up the file for the next time
 
@@ -170,16 +171,21 @@ def main(args):
         generation_id_str = f"gen-{generation:03d}"
         print(f"\n{'#'*20} {generation_id_str} {'#'*20}")
 
-        # Step 1: Generate new self-play data using the current best model
+        # Step 1: Generate new self-play data
         print(f"\n>>> Step 1: Running Self-Play for {generation_id_str}")
+        selfplay_start_time = time.time()
         run_selfplay(generation_id_str)
+        print(f"<<< Self-Play finished in {format_time(time.time() - selfplay_start_time)}")
         
-        # Step 2: Train a new candidate model on the latest data
+        # Step 2: Train a new candidate model
         print(f"\n>>> Step 2: Running Training for {generation_id_str}")
+        training_start_time = time.time()
         run_training(generation_id_str)
-        
-        # Step 3: Evaluate the candidate against the current best
+        print(f"<<< Training finished in {format_time(time.time() - training_start_time)}")
+
+        # Step 3: Evaluate the candidate
         print(f"\n>>> Step 3: Running Evaluation for {generation_id_str}")
+        evaluation_start_time = time.time()
         is_warmup = (generation <= WARMUP_GENS)
         if is_warmup:
             print(f"\n--- Warm-up generation. Auto-promoting candidate. ---")
@@ -187,8 +193,7 @@ def main(args):
         else:
             win_rate = run_evaluation(generation_id_str)
             promote_candidate(win_rate)
-        
-        print(f"\n{'#'*20} Completed {generation_id_str} {'#'*20}\n")
+        print(f"<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}")
 
         if os.path.exists(STOP_FILE):
             print("\n[AUTO] 'stop.txt' file detected. Shutting down gracefully after this generation.", flush=True)
