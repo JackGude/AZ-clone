@@ -11,6 +11,7 @@ import json
 import uuid
 import argparse
 import wandb
+import re
 from datetime import datetime
 from alphazero.env import ChessEnv
 from alphazero.move_encoder import MoveEncoder
@@ -23,6 +24,7 @@ from config import (
     PROJECT_NAME,
     REPLAY_DIR,
     CHECKPOINT_DIR,
+    LOGS_DIR,
     BEST_CHECKPOINT,
     OPENINGS_SELFPLAY_PATH,
     # Self-Play Config
@@ -60,6 +62,30 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 #  Game Generation Logic
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_resume_game_count(log_path):
+    """
+    Parses a self-play log file to find the last game number that started.
+    """
+    last_game_started = 0
+    if not os.path.exists(log_path):
+        return 0 # No log file means we start from scratch
+
+    # The regex looks for the pattern "=== Starting game X/Y ===" and captures X
+    pattern = re.compile(r"=== Starting game (\d+)")
+    
+    try:
+        with open(log_path, 'r') as f:
+            for line in f:
+                match = pattern.search(line)
+                if match:
+                    # Continuously update with the latest game number found
+                    last_game_started = int(match.group(1))
+    except Exception as e:
+        print(f"Warning: Could not parse log file {log_path} for resuming. Starting fresh. Error: {e}")
+        return 0
+        
+    print(f"\nResuming self-play. Found {last_game_started} games already started in log file.\n", flush=True)
+    return last_game_started
 
 def get_board_from_moves(move_string):
     """
@@ -259,6 +285,17 @@ def main(args):
         )
     net.eval()
 
+    log_path = os.path.join(LOGS_DIR, f"{args.gen_id}-self-play.log")
+    games_already_run = get_resume_game_count(log_path)
+    
+    games_to_play = args.num_games - games_already_run
+
+    if games_to_play <= 0:
+        print("Self-play for this generation is already complete. Exiting.")
+        if wandb.run:
+            wandb.run.finish()
+        return
+
     encoder = MoveEncoder()
     total_start_time = time.time()
     summary_counts = {
@@ -274,8 +311,9 @@ def main(args):
     }
     game_lengths = []
 
-    for i in range(args.num_games):
-        print(f"\n=== Starting game {i+1}/{args.num_games} ===", flush=True)
+    for i in range(games_to_play):
+        current_game_number = games_already_run + i + 1
+        print(f"\n=== Starting game {current_game_number}/{args.num_games} ===", flush=True)
 
         game_examples, outcome_type, game_length = self_play_game(
             net, encoder, device=device
@@ -309,6 +347,10 @@ def main(args):
 
     wandb.log(selfplay_summary)
 
+    # Write results to JSON file
+    with open(args.result_file, 'w') as f:
+        json.dump(selfplay_summary, f, indent=2)
+
     # Finish the wandb run
     if wandb.run:
         wandb.run.finish()
@@ -329,6 +371,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--gen-id", type=str, required=True, help="Generation ID for this run."
+    )
+    parser.add_argument(
+        "--result-file", type=str, required=True, help="Path to write the self-play results JSON file"
     )
     args = parser.parse_args()
     main(args)

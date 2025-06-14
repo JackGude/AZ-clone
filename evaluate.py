@@ -9,6 +9,7 @@ import json
 import wandb
 import random
 import csv
+import sys
 from datetime import datetime
 from automate import format_time
 
@@ -59,7 +60,7 @@ def play_match(net_white, net_black, encoder, time_limit, device, opening_info=N
     env = ChessEnv()
     opening_name, opening_fen = opening_info
     env.set_board(opening_fen)
-    print(f"Starting game with opening: {opening_name}", flush=True)
+    print(f"Starting game with opening: {opening_name}", file=sys.stderr, flush=True)
 
     # Create separate MCTS instances for each player.
     # Dirichlet noise is disabled (dirichlet_alpha=0) for deterministic evaluation.
@@ -106,10 +107,10 @@ def play_match(net_white, net_black, encoder, time_limit, device, opening_info=N
             q_value = root.Q
             player_turn_str = "White" if env.board.turn == chess.WHITE else "Black"
             # Print a formatted status update
-            print(f"    {env.board.fullmove_number}. {player_turn_str}: {move_san:<6} (Eval: {q_value:+.3f})", flush=True)
+            print(f"    {env.board.fullmove_number}. {player_turn_str}: {move_san:<6} (Eval: {q_value:+.3f})", file=sys.stderr, flush=True)
         except Exception:
             # Fallback in case SAN conversion fails for some reason
-            print(f"    Playing move: {move}", flush=True)
+            print(f"    Playing move: {move}", file=sys.stderr, flush=True)
 
         _, reward, done = env.step(move)
         if done:
@@ -153,11 +154,11 @@ def adjudicate_game(q_value, is_white_turn, white_streak, black_streak):
 
     # Check if a player has met the patience requirement
     if white_streak >= ADJUDICATION_PATIENCE:
-        print(f"  Game adjudicated as a WIN for WHITE after {ADJUDICATION_PATIENCE} stable moves.", flush=True)
+        print(f"  Game adjudicated as a WIN for WHITE after {ADJUDICATION_PATIENCE} stable moves.", file=sys.stderr, flush=True)
         return white_streak, black_streak, 1.0
     
     if black_streak >= ADJUDICATION_PATIENCE:
-        print(f"  Game adjudicated as a WIN for BLACK after {ADJUDICATION_PATIENCE} stable moves.", flush=True)
+        print(f"  Game adjudicated as a WIN for BLACK after {ADJUDICATION_PATIENCE} stable moves.", file=sys.stderr, flush=True)
         return white_streak, black_streak, -1.0
 
     # If no adjudication, return the updated streaks and no outcome
@@ -172,10 +173,19 @@ def evaluate(
     checkpoint_new,
     num_games,
     time_limit,
-    device
+    device,
+    result_file
 ):
     """
     Orchestrates a head-to-head match between two network checkpoints.
+    
+    Args:
+        checkpoint_old: Path to the old (incumbent) model checkpoint
+        checkpoint_new: Path to the new (challenger) model checkpoint
+        num_games: Number of games to play
+        time_limit: Time limit per move in seconds
+        device: Device to run inference on ('cpu' or 'cuda')
+        result_file: Path to write the evaluation result JSON file
     """
     # Load the "old" (current best) network
     net_old = AlphaZeroNet(in_channels=119).to(device)
@@ -195,7 +205,7 @@ def evaluate(
     # +1.0 = new_net won, -1.0 = new_net lost, 0.0 = draw.
     results = []
 
-    print(f"\n--- Starting match: {num_games} games, {time_limit}s per move ---", flush=True)
+    print(f"\n--- Starting match: {num_games} games, {time_limit}s per move ---", file=sys.stderr, flush=True)
 
     # Play the specified number of games, alternating colors
     for i in range(num_games):
@@ -204,12 +214,12 @@ def evaluate(
         
         # New network plays as White in even-numbered games
         if i % 2 == 0:
-            print(f"  Game {i+1}/{num_games}... (New plays as White)", flush=True)
+            print(f"  Game {i+1}/{num_games}... (New plays as White)", file=sys.stderr, flush=True)
             reward = play_match(net_new, net_old, encoder, time_limit, device, opening_info=opening_info)
             results.append(reward)
         # New network plays as Black in odd-numbered games
         else:
-            print(f"  Game {i+1}/{num_games}... (New plays as Black)", flush=True)
+            print(f"  Game {i+1}/{num_games}... (New plays as Black)", file=sys.stderr, flush=True)
             reward = play_match(net_old, net_new, encoder, time_limit, device, opening_info=opening_info)
             # The reward is from White's perspective. We negate it to keep
             # the score relative to the new network.
@@ -223,8 +233,8 @@ def evaluate(
             outcome = "Old model won"
         else:
             outcome = "Draw"
-        print(f"  Game {i+1} finished. Outcome: {outcome}. Current score (New vs Old): {sum(r for r in results if r==1)} - {sum(1 for r in results if r==-1)}", flush=True)
-        print(f"Time: {format_time(time.time() - game_start_time)}", flush=True)
+        print(f"  Game {i+1} finished. Outcome: {outcome}. Current score (New vs Old): {sum(r for r in results if r==1)} - {sum(1 for r in results if r==-1)}", file=sys.stderr, flush=True)
+        print(f"Time: {format_time(time.time() - game_start_time)}", file=sys.stderr, flush=True)
 
     total_eval_time = time.time() - total_start_time
     # Calculate final statistics from the perspective of the new network
@@ -235,9 +245,9 @@ def evaluate(
     win_rate = (wins + 0.5 * draws) / num_games if num_games > 0 else 0.0
     avg_game_time = total_eval_time / num_games if num_games > 0 else 0.0
 
-    print("\n=== Evaluation Summary ===", flush=True)
-    print(f"Results for NEW model vs OLD model: {wins} Wins, {losses} Losses, {draws} Draws", flush=True)
-    print(f"Win Rate of NEW model: {win_rate*100:.1f}%", flush=True)
+    print("\n=== Evaluation Summary ===", file=sys.stderr, flush=True)
+    print(f"Results for NEW model vs OLD model: {wins} Wins, {losses} Losses, {draws} Draws", file=sys.stderr, flush=True)
+    print(f"Win Rate of NEW model: {win_rate*100:.1f}%", file=sys.stderr, flush=True)
     
     # Log the detailed evaluation results to wandb
     if wandb.run:
@@ -251,8 +261,10 @@ def evaluate(
             "eval_losses": losses,
         })
 
-    # Print the final win rate in a machine-readable format for automate.py to capture
-    print(f"FINAL_WIN_RATE: {win_rate}", flush=True)
+    # Write the win rate to a JSON file
+    result = {"win_rate": win_rate}
+    with open(result_file, 'w') as f:
+        json.dump(result, f)
 
 
 def main(args):
@@ -273,7 +285,8 @@ def main(args):
         checkpoint_new=args.new,
         num_games=args.games,
         time_limit=args.time_limit,
-        device=device
+        device=device,
+        result_file=args.result_file
     )
 
     if wandb.run:
@@ -287,6 +300,7 @@ if __name__ == "__main__":
     parser.add_argument("--time-limit", type=int, default=DEFAULT_EVAL_TIME_LIMIT, help="Time limit in seconds per move")
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging.")
     parser.add_argument("--gen-id", type=str, required=True, help="Generation ID for this run.")
+    parser.add_argument("--result-file", type=str, required=True, help="Path to write the evaluation result JSON file")
     args = parser.parse_args()
     
     main(args)

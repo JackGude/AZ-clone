@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 import time
+import json
 
 from config import (
     # Project and File Paths
@@ -123,16 +124,23 @@ def load_training_window(encoder: MoveEncoder):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def train(net, device, train_loader, val_loader, config):
+def train(net, device, train_loader, val_loader, config, result_file):
     """
     The main training and validation loop for the model.
     It now takes a single 'config' object for all hyperparameters.
+    
+    Args:
+        net: The neural network to train
+        device: Device to train on ('cpu' or 'cuda')
+        train_loader: DataLoader for training data
+        val_loader: DataLoader for validation data
+        config: Configuration object containing hyperparameters
+        result_file: Path to write the training results JSON file
     """
     is_cuda = device == "cuda"
     optimizer = torch.optim.AdamW(
         net.parameters(), lr=config.lr, weight_decay=config.weight_decay
     )
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=0)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=config.max_epochs
     )
@@ -180,7 +188,6 @@ def train(net, device, train_loader, val_loader, config):
                 val_batches += 1
         avg_val_loss = total_val_loss / val_batches if val_batches > 0 else 0
 
-        # scheduler.step(avg_val_loss)
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
         print(
@@ -215,6 +222,19 @@ def train(net, device, train_loader, val_loader, config):
                 break
 
     total_training_time = time.time() - total_start_time
+    
+    # Write training results to JSON file
+    results = {
+        "best_validation_loss": best_val_loss,
+        "best_epoch": best_epoch,
+        "total_training_time": total_training_time,
+        "final_learning_rate": current_lr,
+        "early_stopped": epochs_without_improvement >= config.patience
+    }
+    
+    with open(result_file, 'w') as f:
+        json.dump(results, f, indent=2)
+    
     # --- Artifact Logging ---
     if best_epoch != -1:
         wandb.log(
@@ -225,7 +245,7 @@ def train(net, device, train_loader, val_loader, config):
         )
         print("--- Logging best model to wandb artifacts ---", flush=True)
         artifact = wandb.Artifact(
-            name=f"model-{wandb.run.id}",  # Name the artifact after the unique run ID
+            name=f"model-{wandb.run.id}",
             type="model",
             metadata={"best_epoch": best_epoch, "best_validation_loss": best_val_loss},
         )
@@ -240,8 +260,6 @@ def main():
     1. Called by `wandb agent` for hyperparameter sweeps.
     2. Called by `automate.py` as part of the main training pipeline.
     """
-    # Keep all arguments defined. This provides the necessary interface for wandb agent.
-    # The default values will be used if not running in a sweep.
     parser = argparse.ArgumentParser()
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
     parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY)
@@ -250,22 +268,21 @@ def main():
     parser.add_argument("--patience", type=int, default=PATIENCE)
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--gen-id", type=str, default=None, help="Generation ID for pipeline mode.")
+    parser.add_argument("--result-file", type=str, required=True, help="Path to write the training results JSON file")
     args = parser.parse_args()
 
     # --- Initialize wandb ---
-    # This passes all args to wandb. For sweeps, wandb overrides the defaults.
     run = wandb.init(
         project=PROJECT_NAME,
         config=args,
-        mode="disabled" if args.no_wandb else "online"
+        mode="disabled" if args.no_wandb else "online",
+        # If args.gen_id is None (e.g., in a sweep), these parameters will be ignored by wandb.
+        group=args.gen_id,
+        name=f"{args.gen_id}-training" if args.gen_id else None,
+        job_type="training" if args.gen_id else "sweep" # Use a default job_type for sweeps
     )
 
     try:
-        if wandb.config.gen_id:
-            run.name = f"{wandb.config.gen_id}-training"
-            run.group = wandb.config.gen_id
-            run.job_type = "training"
-
         config = wandb.config
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -297,7 +314,7 @@ def main():
             pin_memory=True,
         )
 
-        train(net, device, train_loader, val_loader, config)
+        train(net, device, train_loader, val_loader, config, args.result_file)
 
     finally:
         if run:

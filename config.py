@@ -10,6 +10,7 @@ PROJECT_NAME = "alphazero-chess"
 
 REPLAY_DIR = "replay_buffer"
 CHECKPOINT_DIR = "checkpoints"
+LOGS_DIR = "logs"
 BEST_CHECKPOINT = os.path.join(CHECKPOINT_DIR, "best.pth")
 CANDIDATE_PATH = os.path.join(CHECKPOINT_DIR, "candidate.pth")
 

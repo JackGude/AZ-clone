@@ -10,6 +10,7 @@ from datetime import datetime
 from config import (
     # Project and File Paths
     CHECKPOINT_DIR,
+    LOGS_DIR,
     BEST_CHECKPOINT,
     CANDIDATE_PATH,
     SELFPLAY_SCRIPT,
@@ -23,6 +24,7 @@ from config import (
     WARMUP_GENS,
     EVAL_TIME_LIMIT    
 )
+import json
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
@@ -30,62 +32,66 @@ from config import (
 
 # The directory to store checkpoints.
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Pipeline Steps
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_subprocess(cmd):
+def run_subprocess(cmd, log_path):
     """
-    Runs a command as a subprocess, streams its output live, captures it for parsing,
-    and raises an exception if the subprocess fails.
+    Runs a command as a subprocess and redirects all output to a log file.
+    
+    Args:
+        cmd: List of command and arguments to run
+        log_path: Path to the log file where output will be written
+    
+    Raises:
+        RuntimeError: If the subprocess fails
     """
-    print(f"\n{'='*20} Running command: {' '.join(cmd)} {'='*20}")
+    # Ensure the log directory exists
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     
-    # Popen allows us to capture output in real-time.
-    process = subprocess.Popen(
-        cmd, 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.STDOUT, 
-        text=True, 
-        bufsize=1,  # Line buffered
-        universal_newlines=True
-    )
-    
-    output_lines = []
-    # Read and print output line-by-line as it's generated
-    for line in iter(process.stdout.readline, ''):
-        print(line, end='', flush=True)  # Added flush=True for immediate output
-        output_lines.append(line)
-        
-    process.wait() # Wait for the subprocess to finish
+    with open(log_path, 'w') as log_file:
+        process = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+        process.wait()
     
     if process.returncode != 0:
         raise RuntimeError(f"Execution of '{cmd[1]}' failed with exit code {process.returncode}")
-    
-    print(f"\n{'='*20} Command completed {'='*20}\n")
-    return "".join(output_lines)
 
 def run_selfplay(generation_id_str):
     """Runs the self-play script to generate new training data."""
     print(f"\n=== [AUTO] {generation_id_str} --> Running Self-Play ===")
+    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_selfplay.log")
+    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_selfplay_result.json")
+    
     cmd = [
         sys.executable, 
         SELFPLAY_SCRIPT, 
         "--num_games", str(NUM_SELFPLAY_GAMES),
-        "--gen-id", generation_id_str
+        "--gen-id", generation_id_str,
+        "--result-file", result_path
     ]
-    run_subprocess(cmd)
+    run_subprocess(cmd, log_path)
 
 def run_training(generation_id_str):
     """Runs the training script, which saves its best model as 'candidate.pth'."""
     print(f"\n=== [AUTO] {generation_id_str} --> Running Training ===")
+    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training.log")
+    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training_result.json")
+    
     cmd = [
         sys.executable, 
         TRAIN_SCRIPT,
-        "--gen-id", generation_id_str
+        "--gen-id", generation_id_str,
+        "--result-file", result_path
     ]
-    run_subprocess(cmd)
+    run_subprocess(cmd, log_path)
     
     # Verify that the training process successfully created a candidate model
     if not os.path.exists(CANDIDATE_PATH):
@@ -93,35 +99,46 @@ def run_training(generation_id_str):
 
 def run_evaluation(generation_id_str):
     """
-    Runs the evaluation script and parses its output to get the win rate.
+    Runs the evaluation script and reads the win rate from a JSON result file.
+    
+    Returns:
+        float: The win rate of the candidate model against the best model
+        
+    Raises:
+        RuntimeError: If evaluation fails or result file cannot be read
     """
-    print(f"\n=== [AUTO] {generation_id_str} --> Running Evaluation ===")
-
     # If no 'best' model exists yet (first run), the candidate wins by default.
     if not os.path.exists(BEST_CHECKPOINT):
-        print("No existing 'best.pth' found. The candidate will be automatically promoted.")
         return 1.0
 
+    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_evaluation.log")
+    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_eval_result.json")
+    
     cmd = [
         sys.executable, EVALUATE_SCRIPT,
         "--old", BEST_CHECKPOINT,
         "--new", CANDIDATE_PATH,
         "--games", str(NUM_EVAL_GAMES),
         "--time-limit", str(EVAL_TIME_LIMIT),
-        "--gen-id", generation_id_str
+        "--gen-id", generation_id_str,
+        "--result-file", result_path
     ]
     
-    # Capture the full output of the script to find the result line.
-    output = run_subprocess(cmd)
+    run_subprocess(cmd, log_path)
     
-    # Parse the win rate from the last line of the script's output for robustness.
-    for line in reversed(output.strip().split('\n')):
-        if line.startswith("FINAL_WIN_RATE:"):
-            win_rate = float(line.split(":")[1].strip())
-            print(f"--- Parsed win rate from evaluation: {win_rate:.3f} ---")
-            return win_rate
-    
-    raise RuntimeError("Could not parse win rate from evaluate.py output. Check for errors in the script.")
+    try:
+        with open(result_path, 'r') as f:
+            result = json.load(f)
+            win_rate = float(result['win_rate'])
+            
+        # Clean up the result file
+        os.remove(result_path)
+        return win_rate
+        
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        raise RuntimeError(f"Failed to parse evaluation result file: {e}")
+    except FileNotFoundError:
+        raise RuntimeError("Evaluation completed but result file was not created")
 
 def promote_candidate(win_rate):
     """
