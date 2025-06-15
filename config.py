@@ -11,8 +11,8 @@ PROJECT_NAME = "alphazero-chess"
 REPLAY_DIR = "replay_buffer"
 CHECKPOINT_DIR = "checkpoints"
 LOGS_DIR = "logs"
-BEST_CHECKPOINT = os.path.join(CHECKPOINT_DIR, "best.pth")
-CANDIDATE_PATH = os.path.join(CHECKPOINT_DIR, "candidate.pth")
+BEST_MODEL_PATH = os.path.join(CHECKPOINT_DIR, "best.pth")
+CANDIDATE_MODEL_PATH = os.path.join(CHECKPOINT_DIR, "candidate.pth")
 
 OPENINGS_SELFPLAY_PATH = "openings/selfplay_openings.csv"
 OPENINGS_EVAL_PATH = "openings/evaluation_openings.py"
@@ -25,11 +25,11 @@ STOP_FILE          = "stop.txt"     # If this file exists, the automation will s
 # -----------------------------------------------------------------------------
 #  Automation Pipeline Config (automate.py)
 # -----------------------------------------------------------------------------
-NUM_SELFPLAY_GAMES = 100    # Number of self-play games to generate per generation
-NUM_EVAL_GAMES = 12         # Number of games to play to compare models
-WIN_THRESHOLD = 0.50        # Win rate needed for a candidate to be promoted
-WARMUP_GENS = 15            # Number of initial generations to run without evaluation
-EVAL_TIME_LIMIT = 10        # Time in seconds per move for evaluation games
+AUTOMATE_NUM_SELFPLAY_GAMES = 100    # Number of self-play games to generate per generation
+AUTOMATE_NUM_EVAL_GAMES = 12         # Number of games to play to compare models
+AUTOMATE_WIN_THRESHOLD = 0.52        # Win rate needed for a candidate to be promoted
+AUTOMATE_WARMUP_GENS = 15            # Number of initial generations to run without evaluation
+AUTOMATE_EVAL_TIME_LIMIT = 10        # Time in seconds per move for evaluation games
 
 # -----------------------------------------------------------------------------
 #  Self-Play Config (self_play.py)
@@ -46,7 +46,7 @@ TEMP_THRESHOLD = 30         # Number of moves to use temperature sampling
 # Game Termination Parameters
 SELFPLAY_MAX_MOVES = 200    # Cap for game length in self-play
 RESIGN_THRESHOLD = 0.90     # Resign if win probability is below (1 - threshold)
-DRAW_CAP_PENALTY = -0.2     # Reward for hitting the move cap
+DRAW_CAP_PENALTY = 0.0      # Reward for hitting the move cap
 
 # -----------------------------------------------------------------------------
 #  Training Config (train.py)

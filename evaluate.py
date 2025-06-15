@@ -16,6 +16,8 @@ from automate import format_time
 from config import (
     # Project and File Paths
     PROJECT_NAME,
+    BEST_MODEL_PATH,
+    CANDIDATE_MODEL_PATH,
     # Evaluation Config
     DEFAULT_NUM_EVAL_GAMES,
     DEFAULT_EVAL_TIME_LIMIT,
@@ -294,13 +296,13 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate two AlphaZeroNet checkpoints head-to-head.")
-    parser.add_argument("--old",   type=str, required=True, help="Path to the 'old' incumbent best checkpoint")
-    parser.add_argument("--new",   type=str, required=True, help="Path to the 'new' challenger checkpoint")
+    parser.add_argument("--old",   type=str, default=BEST_MODEL_PATH, help="Path to the 'old' incumbent best checkpoint")
+    parser.add_argument("--new",   type=str, default=CANDIDATE_MODEL_PATH, help="Path to the 'new' challenger checkpoint")
     parser.add_argument("--games", type=int, default=DEFAULT_NUM_EVAL_GAMES, help="Number of games to play")
     parser.add_argument("--time-limit", type=int, default=DEFAULT_EVAL_TIME_LIMIT, help="Time limit in seconds per move")
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging.")
-    parser.add_argument("--gen-id", type=str, required=True, help="Generation ID for this run.")
-    parser.add_argument("--result-file", type=str, required=True, help="Path to write the evaluation result JSON file")
+    parser.add_argument("--gen-id", type=str, default="manual", help="Generation ID for this run.")
+    parser.add_argument("--result-file", type=str, default="eval_results.json", help="Path to write the evaluation result JSON file")
     args = parser.parse_args()
     
     main(args)

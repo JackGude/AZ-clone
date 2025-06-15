@@ -11,18 +11,18 @@ from config import (
     # Project and File Paths
     CHECKPOINT_DIR,
     LOGS_DIR,
-    BEST_CHECKPOINT,
-    CANDIDATE_PATH,
+    BEST_MODEL_PATH,
+    CANDIDATE_MODEL_PATH,
     SELFPLAY_SCRIPT,
     TRAIN_SCRIPT,
     EVALUATE_SCRIPT,
     STOP_FILE,
     # Automation Pipeline Config
-    NUM_SELFPLAY_GAMES,
-    NUM_EVAL_GAMES,
-    WIN_THRESHOLD,
-    WARMUP_GENS,
-    EVAL_TIME_LIMIT    
+    AUTOMATE_NUM_SELFPLAY_GAMES,
+    AUTOMATE_NUM_EVAL_GAMES,
+    AUTOMATE_WIN_THRESHOLD,
+    AUTOMATE_WARMUP_GENS,
+    AUTOMATE_EVAL_TIME_LIMIT    
 )
 import json
 
@@ -73,13 +73,13 @@ def run_selfplay(generation_id_str):
     cmd = [
         sys.executable, 
         SELFPLAY_SCRIPT, 
-        "--num_games", str(NUM_SELFPLAY_GAMES),
+        "--num_games", str(AUTOMATE_NUM_SELFPLAY_GAMES),
         "--gen-id", generation_id_str,
         "--result-file", result_path
     ]
     run_subprocess(cmd, log_path)
 
-def run_training(generation_id_str):
+def run_training(generation_id_str, is_warmup):
     """Runs the training script, which saves its best model as 'candidate.pth'."""
     print(f"\n=== [AUTO] {generation_id_str} --> Running Training ===")
     log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training.log")
@@ -89,37 +89,37 @@ def run_training(generation_id_str):
         sys.executable, 
         TRAIN_SCRIPT,
         "--gen-id", generation_id_str,
-        "--result-file", result_path
+        "--result-file", result_path,
+        "--load-weights" if not is_warmup else ""
     ]
     run_subprocess(cmd, log_path)
     
     # Verify that the training process successfully created a candidate model
-    if not os.path.exists(CANDIDATE_PATH):
-        raise FileNotFoundError(f"Training completed, but the expected output '{CANDIDATE_PATH}' was not created.")
+    if not os.path.exists(CANDIDATE_MODEL_PATH):
+        raise FileNotFoundError(f"Training completed, but the expected output '{CANDIDATE_MODEL_PATH}' was not created.")
 
-def run_evaluation(generation_id_str):
+def run_evaluation(generation_id_str, is_warmup=False):
     """
-    Runs the evaluation script and reads the win rate from a JSON result file.
-    
-    Returns:
-        float: The win rate of the candidate model against the best model
-        
-    Raises:
-        RuntimeError: If evaluation fails or result file cannot be read
+    Runs the evaluation script and promotes the candidate if it meets the win threshold.
+    If is_warmup is True, automatically promotes the candidate without evaluation.
     """
     # If no 'best' model exists yet (first run), the candidate wins by default.
-    if not os.path.exists(BEST_CHECKPOINT):
-        return 1.0
+    if not os.path.exists(BEST_MODEL_PATH):
+        promote_candidate(1.0)
+        return
+
+    if is_warmup:
+        print(f"\n--- Warm-up generation. Auto-promoting candidate. ---")
+        promote_candidate(1.0)
+        return
 
     log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_evaluation.log")
     result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_eval_result.json")
     
     cmd = [
         sys.executable, EVALUATE_SCRIPT,
-        "--old", BEST_CHECKPOINT,
-        "--new", CANDIDATE_PATH,
-        "--games", str(NUM_EVAL_GAMES),
-        "--time-limit", str(EVAL_TIME_LIMIT),
+        "--games", str(AUTOMATE_NUM_EVAL_GAMES),
+        "--time-limit", str(AUTOMATE_EVAL_TIME_LIMIT),
         "--gen-id", generation_id_str,
         "--result-file", result_path
     ]
@@ -133,7 +133,7 @@ def run_evaluation(generation_id_str):
             
         # Clean up the result file
         os.remove(result_path)
-        return win_rate
+        promote_candidate(win_rate)
         
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         raise RuntimeError(f"Failed to parse evaluation result file: {e}")
@@ -144,14 +144,14 @@ def promote_candidate(win_rate):
     """
     If the candidate's win rate is above the threshold, it replaces 'best.pth'.
     """
-    if win_rate >= WIN_THRESHOLD:
-        print(f"→ Candidate met win threshold ({win_rate:.2f} >= {WIN_THRESHOLD}). Promoting to 'best.pth'.")
+    if win_rate >= AUTOMATE_WIN_THRESHOLD:
+        print(f"→ Candidate met win threshold ({win_rate:.2f} >= {AUTOMATE_WIN_THRESHOLD}). Promoting to 'best.pth'.")
         # Use rename for an atomic operation, replacing the old best model.
-        shutil.move(CANDIDATE_PATH, BEST_CHECKPOINT)
+        shutil.move(CANDIDATE_MODEL_PATH, BEST_MODEL_PATH)
         return True
     else:
-        print(f"→ Candidate failed to meet win threshold ({win_rate:.2f} < {WIN_THRESHOLD}). Discarding.")
-        os.remove(CANDIDATE_PATH)
+        print(f"→ Candidate failed to meet win threshold ({win_rate:.2f} < {AUTOMATE_WIN_THRESHOLD}). Discarding.")
+        os.remove(CANDIDATE_MODEL_PATH)
         return False
     
 def format_time(seconds):
@@ -177,14 +177,15 @@ def main(args):
     print(f"\n{'#'*20} Starting AlphaZero Training Loop {'#'*20}")
     print(f"Starting from generation {generation}")
     print(f"Configuration:")
-    print(f"  - Self-play games per generation: {NUM_SELFPLAY_GAMES}")
-    print(f"  - Evaluation games: {NUM_EVAL_GAMES}")
-    print(f"  - Win threshold: {WIN_THRESHOLD}")
-    print(f"  - Warm-up generations: {WARMUP_GENS}")
+    print(f"  - Self-play games per generation: {AUTOMATE_NUM_SELFPLAY_GAMES}")
+    print(f"  - Evaluation games: {AUTOMATE_NUM_EVAL_GAMES}")
+    print(f"  - Win threshold: {AUTOMATE_WIN_THRESHOLD}")
+    print(f"  - Warm-up generations: {AUTOMATE_WARMUP_GENS}")
     print(f"{'#'*80}\n")
 
     # The main continuous loop
     while True:
+        is_warmup = (generation <= AUTOMATE_WARMUP_GENS)
         generation_id_str = f"gen-{generation:03d}"
         print(f"\n{'#'*20} {generation_id_str} {'#'*20}")
 
@@ -197,19 +198,13 @@ def main(args):
         # Step 2: Train a new candidate model
         print(f"\n>>> Step 2: Running Training for {generation_id_str}")
         training_start_time = time.time()
-        run_training(generation_id_str)
+        run_training(generation_id_str, is_warmup)
         print(f"<<< Training finished in {format_time(time.time() - training_start_time)}")
 
         # Step 3: Evaluate the candidate
         print(f"\n>>> Step 3: Running Evaluation for {generation_id_str}")
         evaluation_start_time = time.time()
-        is_warmup = (generation <= WARMUP_GENS)
-        if is_warmup:
-            print(f"\n--- Warm-up generation. Auto-promoting candidate. ---")
-            promote_candidate(1.0) # Force promotion
-        else:
-            win_rate = run_evaluation(generation_id_str)
-            promote_candidate(win_rate)
+        run_evaluation(generation_id_str, is_warmup)
         print(f"<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}")
 
         if os.path.exists(STOP_FILE):

@@ -18,7 +18,8 @@ from config import (
     # Project and File Paths
     PROJECT_NAME,
     REPLAY_DIR,
-    CANDIDATE_PATH,
+    BEST_MODEL_PATH,
+    CANDIDATE_MODEL_PATH,
     # Training Config
     LEARNING_RATE,
     WEIGHT_DECAY,
@@ -151,6 +152,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
     total_start_time = time.time()
 
     for epoch in range(1, config.max_epochs + 1):
+        print(f"Beginning epoch {epoch} of {config.max_epochs}...", flush=True)
         epoch_start_time = time.time()
         # --- Training Phase ---
         net.train()
@@ -210,7 +212,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
             best_val_loss = avg_val_loss
             best_epoch = epoch
             epochs_without_improvement = 0
-            torch.save(net.state_dict(), CANDIDATE_PATH)
+            torch.save(net.state_dict(), CANDIDATE_MODEL_PATH)
             print(f"  Validation loss improved. Saved new candidate model.", flush=True)
         else:
             epochs_without_improvement += 1
@@ -249,44 +251,70 @@ def train(net, device, train_loader, val_loader, config, result_file):
             type="model",
             metadata={"best_epoch": best_epoch, "best_validation_loss": best_val_loss},
         )
-        artifact.add_file(CANDIDATE_PATH)
+        artifact.add_file(CANDIDATE_MODEL_PATH)
         wandb.run.log_artifact(artifact)
 
 
 # --- Main Execution Block ---
 def main():
     """
-    This script's main function is designed to be dual-purpose:
-    1. Called by `wandb agent` for hyperparameter sweeps.
-    2. Called by `automate.py` as part of the main training pipeline.
+    This script's main function is designed for three execution contexts:
+    1. Pipeline Mode: Called by `automate.py` with specific arguments.
+    2. Manual Mode: Run directly by a user with default arguments.
+    3. Sweep Mode: Called by `wandb agent` for hyperparameter sweeps.
     """
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--lr", type=float, default=LEARNING_RATE)
-    parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY)
-    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--max_epochs", type=int, default=MAX_EPOCHS)
-    parser.add_argument("--patience", type=int, default=PATIENCE)
-    parser.add_argument("--no-wandb", action="store_true")
-    parser.add_argument("--gen-id", type=str, default=None, help="Generation ID for pipeline mode.")
-    parser.add_argument("--result-file", type=str, required=True, help="Path to write the training results JSON file")
+    parser = argparse.ArgumentParser(description="Train a new AlphaZero model.")
+    # --- Hyperparameters (for sweeps and manual runs) ---
+    parser.add_argument("--lr", type=float, default=LEARNING_RATE, help="Learning rate.")
+    parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY, help="Weight decay.")
+    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE, help="Batch size for training.")
+    parser.add_argument("--max_epochs", type=int, default=MAX_EPOCHS, help="Maximum number of epochs to train for.")
+    parser.add_argument("--patience", type=int, default=PATIENCE, help="Number of epochs to wait before early stopping.")
+    # --- Control Arguments ---
+    parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging.")
+    parser.add_argument("--load-weights", action="store_true", help="Load weights from best.pth to continue training.")
+    # --- Arguments for Pipeline/Manual mode ---
+    parser.add_argument("--gen-id", type=str, default="manual", help="Generation ID for this run.")
+    parser.add_argument("--result-file", type=str, default="training_results.json", help="Path to write training results.")
     args = parser.parse_args()
 
-    # --- Initialize wandb ---
-    run = wandb.init(
-        project=PROJECT_NAME,
-        config=args,
-        mode="disabled" if args.no_wandb else "online",
-        # If args.gen_id is None (e.g., in a sweep), these parameters will be ignored by wandb.
-        group=args.gen_id,
-        name=f"{args.gen_id}-training" if args.gen_id else None,
-        job_type="training" if args.gen_id else "sweep" # Use a default job_type for sweeps
-    )
+    # --- Initialize wandb based on the execution context ---
+    is_sweep = os.getenv("WANDB_SWEEP_ID") is not None
+
+    if is_sweep:
+        # --- Sweep Mode ---
+        # W&B agent will pass all hyperparameters in `config`.
+        # No need to specify group, name, or job_type as the sweep controls this.
+        run = wandb.init(
+            project=PROJECT_NAME,
+            config=args,
+            mode="disabled" if args.no_wandb else "online",
+        )
+        # Update job_type after init for clarity in the W&B dashboard
+        wandb.run.job_type = "sweep"
+
+    else:
+        # --- Single Run Mode (Pipeline or Manual) ---
+        run = wandb.init(
+            project=PROJECT_NAME,
+            config=args,
+            group=args.gen_id,
+            name=f"{args.gen_id}-training",
+            job_type="training",
+            mode="disabled" if args.no_wandb else "online",
+        )
 
     try:
-        config = wandb.config
-        
+        config = wandb.config       
         device = "cuda" if torch.cuda.is_available() else "cpu"
         net = AlphaZeroNet().to(device)
+
+        if args.load_weights:
+            print(f"Loading weights from {BEST_MODEL_PATH}...", flush=True)
+            net.load_state_dict(torch.load(BEST_MODEL_PATH, weights_only=True))
+        else:
+            print(f"No weights loaded. Starting from scratch.", flush=True)
+
         encoder = MoveEncoder()
 
         full_dataset = load_training_window(encoder)
