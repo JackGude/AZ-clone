@@ -6,7 +6,6 @@ import time
 import subprocess
 import shutil
 import argparse
-from datetime import datetime
 from config import (
     # Project and File Paths
     CHECKPOINT_DIR,
@@ -109,7 +108,7 @@ def run_evaluation(generation_id_str, is_warmup=False):
         return
 
     if is_warmup:
-        print(f"\n--- Warm-up generation. Auto-promoting candidate. ---")
+        print("\n--- Warm-up generation. Auto-promoting candidate. ---")
         promote_candidate(1.0)
         return
 
@@ -176,7 +175,7 @@ def main(args):
 
     print(f"\n{'#'*20} Starting AlphaZero Training Loop {'#'*20}")
     print(f"Starting from generation {generation}")
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  - Self-play games per generation: {AUTOMATE_NUM_SELFPLAY_GAMES}")
     print(f"  - Evaluation games: {AUTOMATE_NUM_EVAL_GAMES}")
     print(f"  - Win threshold: {AUTOMATE_WIN_THRESHOLD}")

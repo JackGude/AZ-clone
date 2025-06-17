@@ -26,10 +26,10 @@ STOP_FILE          = "stop.txt"     # If this file exists, the automation will s
 #  Automation Pipeline Config (automate.py)
 # -----------------------------------------------------------------------------
 AUTOMATE_NUM_SELFPLAY_GAMES = 100    # Number of self-play games to generate per generation
-AUTOMATE_NUM_EVAL_GAMES = 12         # Number of games to play to compare models
+AUTOMATE_NUM_EVAL_GAMES = 24         # Number of games to play to compare models
 AUTOMATE_WIN_THRESHOLD = 0.52        # Win rate needed for a candidate to be promoted
 AUTOMATE_WARMUP_GENS = 15            # Number of initial generations to run without evaluation
-AUTOMATE_EVAL_TIME_LIMIT = 10        # Time in seconds per move for evaluation games
+AUTOMATE_EVAL_TIME_LIMIT = 20        # Time in seconds per move for evaluation games
 
 # -----------------------------------------------------------------------------
 #  Self-Play Config (self_play.py)
@@ -69,5 +69,7 @@ DEFAULT_EVAL_TIME_LIMIT = 10        # Time in seconds per move for evaluation ga
 DEFAULT_EVAL_CPUCT = 1.0            # PUCT constant for evaluation MCTS
 
 # Adjudication Parameters
-ADJUDICATION_THRESHOLD = 0.90
-ADJUDICATION_PATIENCE = 3
+DRAW_ADJUDICATION_THRESHOLD = 0.08  # Adjudicate if abs(eval) is below this value
+DRAW_ADJUDICATION_PATIENCE = 12     # For this many consecutive moves
+WIN_ADJUDICATION_THRESHOLD = 0.90   # Adjudicate if eval is above this value
+WIN_ADJUDICATION_PATIENCE = 6       # For this many consecutive moves

@@ -11,8 +11,6 @@ import json
 import uuid
 import argparse
 import wandb
-import re
-from datetime import datetime
 from alphazero.env import ChessEnv
 from alphazero.move_encoder import MoveEncoder
 from alphazero.state_encoder import encode_history
@@ -24,7 +22,6 @@ from config import (
     PROJECT_NAME,
     REPLAY_DIR,
     CHECKPOINT_DIR,
-    LOGS_DIR,
     BEST_MODEL_PATH,
     OPENINGS_SELFPLAY_PATH,
     # Self-Play Config
@@ -268,7 +265,6 @@ def main(args):
     net.eval()
 
     encoder = MoveEncoder()
-    total_start_time = time.time()
     summary_counts = {
         k: 0
         for k in [
@@ -308,12 +304,10 @@ def main(args):
         manage_replay_buffer()
 
     # --- Log summary statistics to wandb ---
-    total_selfplay_time = time.time() - total_start_time
     avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
 
     selfplay_summary = {
         "selfplay_total_games": args.num_games,
-        "total_selfplay_time": total_selfplay_time,
         "selfplay_avg_game_length": avg_length,
     }
     for k, v in summary_counts.items():
@@ -352,8 +346,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--result-file",
         type=str,
-        default="selfplay_results.json",
-        help="Path to write the self-play results JSON file",
+        default="logs/selfplay_results.json",
+        help="Path to write the self-play results JSON file, default is logs/selfplay_results.json",
     )
     args = parser.parse_args()
     main(args)

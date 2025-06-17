@@ -131,3 +131,20 @@ class ChessEnv:
         except (ValueError, IndexError) as e:
             print(f"Warning: Could not parse move string '{move_string}' in opening book. Error: {e}. Starting from standard position.")
             self.reset()
+
+    def set_board_from_fen(self, fen):
+        """
+        Sets up the board from a FEN string and initializes the history accordingly.
+        
+        Args:
+            fen (str): A valid FEN string representing the desired board position.
+        """
+        try:
+            self.board = chess.Board(fen)
+            self.history.clear()
+            # Pre-fill the history buffer with the current position's FEN
+            for _ in range(self.history_size):
+                self.history.append(self.board.fen())
+        except ValueError as e:
+            print(f"Warning: Invalid FEN string '{fen}'. Error: {e}. Starting from standard position.")
+            self.reset()

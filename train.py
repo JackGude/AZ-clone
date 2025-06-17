@@ -8,7 +8,6 @@ import wandb
 import random
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 import time
@@ -26,7 +25,7 @@ from config import (
     BATCH_SIZE,
     MAX_EPOCHS,
     PATIENCE,
-    TRAIN_WINDOW_SIZE
+    TRAIN_WINDOW_SIZE,
 )
 from alphazero.model import AlphaZeroNet
 from alphazero.move_encoder import MoveEncoder
@@ -129,7 +128,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
     """
     The main training and validation loop for the model.
     It now takes a single 'config' object for all hyperparameters.
-    
+
     Args:
         net: The neural network to train
         device: Device to train on ('cpu' or 'cuda')
@@ -193,7 +192,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
         print(
-            f"Epoch {epoch:02d}/{config.max_epochs} | Val Loss: {avg_val_loss:.4f} | Train Loss: {avg_train_loss:.4f} | LR: {current_lr:.1e}",
+            f"Epoch {epoch:02d}/{config.max_epochs} | Validation Loss: {avg_val_loss:.4f} | Training Loss: {avg_train_loss:.4f} | Learning Rate: {current_lr:.1e}",
             flush=True,
         )
         print(f"Time: {format_time(time.time() - epoch_start_time)}", flush=True)
@@ -213,7 +212,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
             best_epoch = epoch
             epochs_without_improvement = 0
             torch.save(net.state_dict(), CANDIDATE_MODEL_PATH)
-            print(f"  Validation loss improved. Saved new candidate model.", flush=True)
+            print("  Validation loss improved. Saved new candidate model.", flush=True)
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= config.patience:
@@ -224,19 +223,18 @@ def train(net, device, train_loader, val_loader, config, result_file):
                 break
 
     total_training_time = time.time() - total_start_time
-    
+
     # Write training results to JSON file
     results = {
         "best_validation_loss": best_val_loss,
         "best_epoch": best_epoch,
         "total_training_time": total_training_time,
-        "final_learning_rate": current_lr,
-        "early_stopped": epochs_without_improvement >= config.patience
+        "early_stopped": epochs_without_improvement >= config.patience,
     }
-    
-    with open(result_file, 'w') as f:
+
+    with open(result_file, "w") as f:
         json.dump(results, f, indent=2)
-    
+
     # --- Artifact Logging ---
     if best_epoch != -1:
         wandb.log(
@@ -265,17 +263,46 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Train a new AlphaZero model.")
     # --- Hyperparameters (for sweeps and manual runs) ---
-    parser.add_argument("--lr", type=float, default=LEARNING_RATE, help="Learning rate.")
-    parser.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY, help="Weight decay.")
-    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE, help="Batch size for training.")
-    parser.add_argument("--max_epochs", type=int, default=MAX_EPOCHS, help="Maximum number of epochs to train for.")
-    parser.add_argument("--patience", type=int, default=PATIENCE, help="Number of epochs to wait before early stopping.")
+    parser.add_argument(
+        "--lr", type=float, default=LEARNING_RATE, help="Learning rate."
+    )
+    parser.add_argument(
+        "--weight_decay", type=float, default=WEIGHT_DECAY, help="Weight decay."
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=BATCH_SIZE, help="Batch size for training."
+    )
+    parser.add_argument(
+        "--max_epochs",
+        type=int,
+        default=MAX_EPOCHS,
+        help="Maximum number of epochs to train for.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=PATIENCE,
+        help="Number of epochs to wait before early stopping.",
+    )
     # --- Control Arguments ---
-    parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging.")
-    parser.add_argument("--load-weights", action="store_true", help="Load weights from best.pth to continue training.")
+    parser.add_argument(
+        "--no-wandb", action="store_true", help="Disable Weights & Biases logging."
+    )
+    parser.add_argument(
+        "--load-weights",
+        action="store_true",
+        help="Load weights from best.pth to continue training.",
+    )
     # --- Arguments for Pipeline/Manual mode ---
-    parser.add_argument("--gen-id", type=str, default="manual", help="Generation ID for this run.")
-    parser.add_argument("--result-file", type=str, default="training_results.json", help="Path to write training results.")
+    parser.add_argument(
+        "--gen-id", type=str, default="manual", help="Generation ID for this run."
+    )
+    parser.add_argument(
+        "--result-file",
+        type=str,
+        default="logs/training_results.json",
+        help="Path to write training results.\nDefault: logs/training_results.json",
+    )
     args = parser.parse_args()
 
     # --- Initialize wandb based on the execution context ---
@@ -305,7 +332,7 @@ def main():
         )
 
     try:
-        config = wandb.config       
+        config = wandb.config
         device = "cuda" if torch.cuda.is_available() else "cpu"
         net = AlphaZeroNet().to(device)
 
@@ -313,7 +340,7 @@ def main():
             print(f"Loading weights from {BEST_MODEL_PATH}...", flush=True)
             net.load_state_dict(torch.load(BEST_MODEL_PATH, weights_only=True))
         else:
-            print(f"No weights loaded. Starting from scratch.", flush=True)
+            print("No weights loaded. Starting from scratch.", flush=True)
 
         encoder = MoveEncoder()
 
