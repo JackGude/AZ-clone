@@ -20,6 +20,7 @@ from config import (
     BEST_MODEL_PATH,
     CANDIDATE_MODEL_PATH,
     # Training Config
+    NUM_TRAINING_WORKERS,
     LEARNING_RATE,
     WEIGHT_DECAY,
     BATCH_SIZE,
@@ -29,8 +30,7 @@ from config import (
 )
 from alphazero.model import AlphaZeroNet
 from alphazero.move_encoder import MoveEncoder
-
-from automate import format_time
+from alphazero.utils import format_time
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Dataset Class & Data Loading
@@ -253,7 +253,11 @@ def train(net, device, train_loader, val_loader, config, result_file):
         wandb.run.log_artifact(artifact)
 
 
-# --- Main Execution Block ---
+# ─────────────────────────────────────────────────────────────────────────────
+#  Main Execution Block
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def main():
     """
     This script's main function is designed for three execution contexts:
@@ -357,7 +361,7 @@ def main():
             train_dataset,
             batch_size=config.batch_size,
             shuffle=True,
-            num_workers=6,
+            num_workers=NUM_TRAINING_WORKERS,
             pin_memory=True,
         )
 
@@ -365,7 +369,7 @@ def main():
             val_dataset,
             batch_size=config.batch_size,
             shuffle=False,
-            num_workers=6,
+            num_workers=NUM_TRAINING_WORKERS,
             pin_memory=True,
         )
 

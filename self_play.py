@@ -3,230 +3,102 @@
 import os
 import random
 import pickle
-import torch
-import chess
-import numpy as np
 import time
 import json
 import uuid
 import argparse
 import wandb
+import multiprocessing
+from typing import List, Tuple
+
+# --- Local Project Imports ---
+# Use the new generic game runner and utility functions
+from alphazero.game_runner import GameConfig, play_game
+from alphazero.utils import setup_selfplay_opening, format_time, manage_replay_buffer
 from alphazero.env import ChessEnv
-from alphazero.move_encoder import MoveEncoder
-from alphazero.state_encoder import encode_history
-from alphazero.mcts import MCTS
-from alphazero.model import AlphaZeroNet
-from automate import format_time
+
+# --- Config Imports ---
 from config import (
     # Project and File Paths
     PROJECT_NAME,
     REPLAY_DIR,
     CHECKPOINT_DIR,
     BEST_MODEL_PATH,
-    OPENINGS_SELFPLAY_PATH,
     # Self-Play Config
     DEFAULT_NUM_SELFPLAY_GAMES,
-    MAX_GAMES_IN_BUFFER,
+    NUM_SELFPLAY_WORKERS,
     SELFPLAY_CPUCT,
     DIRICHLET_EPSILON,
     DIRICHLET_ALPHA,
     TEMP_THRESHOLD,
     SELFPLAY_MAX_MOVES,
     RESIGN_THRESHOLD,
-    DRAW_CAP_PENALTY,
 )
-import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Load openings from CSV
-try:
-    SELFPLAY_OPENINGS = pd.read_csv(OPENINGS_SELFPLAY_PATH)
-    print(f"Successfully loaded {len(SELFPLAY_OPENINGS)} openings for self-play.")
-except FileNotFoundError:
-    print(
-        f"Warning: {OPENINGS_SELFPLAY_PATH} not found. Self-play will start from the standard position."
-    )
-    SELFPLAY_OPENINGS = None
 
 # Ensure necessary directories exist, paths come from config.py
 os.makedirs(REPLAY_DIR, exist_ok=True)
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Game Generation Logic
+#  Helper Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def get_board_from_moves(move_string):
-    """
-    Takes a space-separated string of moves in SAN, plays them on a board,
-    and returns the final chess.Board object with a full move history.
-    """
-    board = chess.Board()
-    try:
-        for move in move_string.split(" "):
-            board.push_san(move)
-        return board
-    except (ValueError, IndexError):
-        return chess.Board()
-
-
-def setup_opening(env):
-    """
-    Sets up the opening position for a self-play game.
-    Has a 75% chance to use the opening book, otherwise uses standard start.
-    """
-    opening_name = "Standard Opening"
-    if (
-        SELFPLAY_OPENINGS is not None
-        and not SELFPLAY_OPENINGS.empty
-        and random.random() < 0.75
-    ):
-        random_opening = SELFPLAY_OPENINGS.sample(n=1).iloc[0]
-        move_string = random_opening["moves"]
-        starting_board = get_board_from_moves(move_string)
-        env.board = starting_board  # Set the environment's board directly
-        opening_name = random_opening.get("name", "Unknown Opening")
-    print(f"--- Starting from opening: {opening_name} ---", flush=True)
-
-
-def choose_time_limit():
+def choose_time_limit(prefix: str):
     """Randomly chooses a time limit to add variety to the training data."""
     if random.random() < 0.5:
         time_limit = random.uniform(0.5, 1.5)
     else:
         time_limit = random.uniform(2.0, 4.0)
-    print(f"Time limit per move: {time_limit:.1f}s", flush=True)
+    print(f"{prefix} Time limit per move: {time_limit:.1f}s", flush=True)
     return time_limit
 
 
-def self_play_game(net, encoder, device):
+def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int]:
     """
-    Plays one full game of chess via self-play using MCTS.
-    Returns a list of training examples, the outcome type, and game length.
+    This is the target function for each worker process. It plays one game.
     """
-    env = ChessEnv()
-    env.reset()
+    prefix = f"[Worker {game_num + 1}]"
+    print(f"{prefix} Starting game...", flush=True)
+    game_start_time = time.time()
 
-    setup_opening(env)
-
-    time_limit = choose_time_limit()
-
-    mcts = MCTS(
-        net,
-        encoder,
-        time_limit=time_limit,
+    # Create a configuration for a self-play game
+    config = GameConfig(
+        white_model_path=BEST_MODEL_PATH,
+        black_model_path=BEST_MODEL_PATH,
+        time_limit=choose_time_limit(prefix),
         c_puct=SELFPLAY_CPUCT,
-        device=device,
-        batch_size=64,
+        use_dirichlet_noise=True,
         dirichlet_alpha=DIRICHLET_ALPHA,
         dirichlet_epsilon=DIRICHLET_EPSILON,
+        use_temperature_sampling=True,
+        temp_threshold=TEMP_THRESHOLD,
+        use_adjudication=False,  # Adjudication is typically not used for self-play
+        win_adjudication_threshold=0.99,  # N/A
+        win_adjudication_patience=1,  # N/A
+        draw_adjudication_threshold=0.0,  # N/A
+        draw_adjudication_patience=1,  # N/A
+        resign_threshold=RESIGN_THRESHOLD,
+        selfplay_max_moves=SELFPLAY_MAX_MOVES,
+        verbose=False,
+        log_prefix=prefix,
     )
 
-    game_records = []  # Stores (history, pi_vector, player_turn) for each move
-    move_number = 0
-    start_time = time.time()
+    env = ChessEnv()
+    # Pass the game_num to the setup function for clearer logging
+    setup_selfplay_opening(env, game_num)
 
-    # Main game loop
-    while True:
-        # Check for game length cap to prevent infinitely long games
-        if move_number >= SELFPLAY_MAX_MOVES:
-            outcome, outcome_type = DRAW_CAP_PENALTY, "draw_cap"
-            break
-
-        move_number += 1
-
-        # Only apply Dirichlet noise for early moves to encourage opening exploration.
-        mcts.dirichlet_alpha = DIRICHLET_ALPHA if move_number <= TEMP_THRESHOLD else 0.0
-
-        # Run the MCTS search
-        root, _ = mcts.run(env)
-
-        # Resignation logic based on the post-search Q-value
-        if root.Q < -RESIGN_THRESHOLD:
-            to_move = env.board.turn
-            outcome = (
-                -1.0 if to_move == chess.WHITE else 1.0
-            )  # The resigning player loses
-            outcome_type = "resign_white" if to_move == chess.WHITE else "resign_black"
-            break
-
-        # Construct the policy vector (pi) from the MCTS visit counts
-        counts = torch.zeros(encoder.mapping_size, dtype=torch.float32)
-        for mv, child in root.children.items():
-            counts[encoder.encode(mv)] = child.N
-
-        pi = (
-            (counts / counts.sum()).numpy()
-            if counts.sum() > 0
-            else np.zeros(encoder.mapping_size, dtype=np.float32)
-        )
-
-        # Record the state, policy, and player turn for later training example creation
-        game_records.append((list(env.history), pi, env.board.turn))
-
-        # Temperature-based move selection
-        if move_number < TEMP_THRESHOLD:
-            # For early moves, sample from the policy to create varied games
-            move_idx = int(np.random.choice(len(pi), p=pi))
-        else:
-            # For later moves, play greedily by selecting the most visited move
-            move_idx = int(counts.argmax().item())
-
-        move = encoder.decode(move_idx)
-        _, reward, done = env.step(move)
-
-        # Check for game termination (checkmate or draw)
-        if done:
-            outcome = reward
-            if reward == 1.0:
-                outcome_type = "checkmate_white"
-            elif reward == -1.0:
-                outcome_type = "checkmate_black"
-            else:
-                outcome_type = "draw_game"
-            break
+    game_examples, outcome_type, game_length = play_game(config, env)
 
     print(
-        f"Game finished. Moves: {move_number}. Outcome: {outcome_type}. Time: {format_time(time.time() - start_time)}",
+        f"{prefix} Game finished. Outcome: {outcome_type}, Moves: {game_length}, Time: {format_time(time.time() - game_start_time)}",
         flush=True,
     )
-
-    # After the game, prepare the training examples
-    examples = []
-    for hist, pi_vec, player_turn in game_records:
-        # The value 'z' must be from the perspective of the player at that state
-        z_value = outcome if player_turn == chess.WHITE else -outcome
-        state_tensor = encode_history(hist)
-        state_np = state_tensor.numpy()
-        examples.append((state_np, pi_vec, z_value))
-
-    return examples, outcome_type, move_number
-
-
-def manage_replay_buffer():
-    """
-    Keeps a maximum number of recent DRAW games, while preserving all WIN/LOSS games.
-    """
-    try:
-        all_game_files = [
-            os.path.join(REPLAY_DIR, f)
-            for f in os.listdir(REPLAY_DIR)
-            if f.endswith(".pkl")
-        ]
-        draw_files = [
-            f for f in all_game_files if "draw" in os.path.basename(f).lower()
-        ]
-        draw_files.sort(key=os.path.getmtime)
-
-        while len(draw_files) > MAX_GAMES_IN_BUFFER:
-            file_to_delete = draw_files.pop(0)
-            os.remove(file_to_delete)
-    except Exception as e:
-        print(f"Warning: Could not manage replay buffer. Error: {e}", flush=True)
+    return game_examples, outcome_type, game_length
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,9 +107,8 @@ def manage_replay_buffer():
 
 
 def main(args):
-    """Orchestrates the self-play data generation process."""
-
-    # Initialize wandb with the new format
+    """Orchestrates the self-play data generation process using a pool of workers."""
+    # Initialize wandb for the main process
     wandb.init(
         project=PROJECT_NAME,
         group=args.gen_id,
@@ -246,82 +117,51 @@ def main(args):
         mode="disabled" if args.no_wandb else "online",
     )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(
+        f"Starting self-play for {args.num_games} games using {NUM_SELFPLAY_WORKERS} parallel workers..."
+    )
+    start_time = time.time()
 
-    # Load the best available model checkpoint
-    net = AlphaZeroNet(in_channels=119).to(device)
-    checkpoint_path = BEST_MODEL_PATH
+    # Create a pool of worker processes
+    with multiprocessing.Pool(processes=NUM_SELFPLAY_WORKERS) as pool:
+        # map() blocks until all results are in. It distributes the work automatically.
+        results = pool.map(run_selfplay_worker, range(args.num_games))
 
-    if os.path.exists(checkpoint_path):
-        net.load_state_dict(
-            torch.load(checkpoint_path, map_location=device, weights_only=True)
-        )
-        print(f"Loaded best weights from '{checkpoint_path}'", flush=True)
-    else:
-        print(
-            f"No checkpoint found at '{checkpoint_path}'; using randomly initialized model.",
-            flush=True,
-        )
-    net.eval()
+    print(
+        f"\nAll self-play games finished in {format_time(time.time() - start_time)}. Processing results..."
+    )
 
-    encoder = MoveEncoder()
-    summary_counts = {
-        k: 0
-        for k in [
-            "resign_white",
-            "resign_black",
-            "checkmate_white",
-            "checkmate_black",
-            "draw_game",
-            "draw_cap",
-        ]
-    }
+    # Process the results from all workers
+    summary_counts = {}
     game_lengths = []
 
-    for i in range(args.num_games):
-        current_game_number = i + 1
-        print(
-            f"\n=== Starting game {current_game_number}/{args.num_games} ===",
-            flush=True,
-        )
-
-        game_examples, outcome_type, game_length = self_play_game(
-            net, encoder, device=device
-        )
-
-        # Collect stats for logging
-        if outcome_type:
-            summary_counts[outcome_type] += 1
+    for game_examples, outcome_type, game_length in results:
+        summary_counts[outcome_type] = summary_counts.get(outcome_type, 0) + 1
         game_lengths.append(game_length)
 
-        # Save this game's data to its own unique file
         if game_examples:
             game_id = uuid.uuid4()
             game_path = os.path.join(REPLAY_DIR, f"game_{outcome_type}_{game_id}.pkl")
             with open(game_path, "wb") as f:
                 pickle.dump(game_examples, f)
 
-        manage_replay_buffer()
+    manage_replay_buffer()
 
-    # --- Log summary statistics to wandb ---
+    # Log summary statistics
     avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
 
     selfplay_summary = {
         "selfplay_total_games": args.num_games,
         "selfplay_avg_game_length": avg_length,
     }
-    for k, v in summary_counts.items():
-        selfplay_summary[f"outcome_{k}"] = v
+    selfplay_summary.update({f"outcome_{k}": v for k, v in summary_counts.items()})
 
     wandb.log(selfplay_summary)
 
-    # Write results to JSON file
     with open(args.result_file, "w") as f:
         json.dump(selfplay_summary, f, indent=2)
 
-    # Finish the wandb run
-    if wandb.run:
-        wandb.run.finish()
+    wandb.finish()
 
 
 if __name__ == "__main__":
@@ -329,7 +169,7 @@ if __name__ == "__main__":
         description="Run self-play games to generate training data."
     )
     parser.add_argument(
-        "--num_games",
+        "--num-games",
         type=int,
         default=DEFAULT_NUM_SELFPLAY_GAMES,
         help="Number of self-play games to generate.",
@@ -338,16 +178,13 @@ if __name__ == "__main__":
         "--no-wandb", action="store_true", help="Disable wandb logging for this run."
     )
     parser.add_argument(
-        "--gen-id",
-        type=str,
-        default="manual",
-        help="Generation ID for this run.",
+        "--gen-id", type=str, default="manual", help="Generation ID for this run."
     )
     parser.add_argument(
         "--result-file",
         type=str,
         default="logs/selfplay_results.json",
-        help="Path to write the self-play results JSON file, default is logs/selfplay_results.json",
+        help="Path to write the self-play results JSON file.",
     )
     args = parser.parse_args()
     main(args)
