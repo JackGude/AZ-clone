@@ -84,7 +84,7 @@ def adjudicate_game(
 
 def play_game(
     config: GameConfig, env: Optional[ChessEnv] = None
-) -> Tuple[List[dict], str, int]:
+) -> Tuple[List[dict], Optional[float], str, int]:
     """
     Play a single game of chess using the provided configuration.
     Accepts an optional ChessEnv object.
@@ -277,4 +277,4 @@ def play_game(
             state_tensor = encode_history(record["state_history"])
             final_examples.append((state_tensor.numpy(), record["pi"], z_value))
 
-    return final_examples, outcome_type, move_count
+    return final_examples, outcome, outcome_type, move_count

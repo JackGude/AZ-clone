@@ -2,7 +2,6 @@
 
 import os
 import random
-import pickle
 import time
 import json
 import uuid
@@ -10,19 +9,22 @@ import argparse
 import wandb
 import multiprocessing
 from typing import List, Tuple
+import torch
+import numpy as np
 
 # --- Local Project Imports ---
 # Use the new generic game runner and utility functions
 from alphazero.game_runner import GameConfig, play_game
 from alphazero.utils import setup_selfplay_opening, format_time, manage_replay_buffer
 from alphazero.env import ChessEnv
+from alphazero.move_encoder import MoveEncoder
 
 # --- Config Imports ---
 from config import (
     # Project and File Paths
     PROJECT_NAME,
-    REPLAY_DIR,
-    CHECKPOINT_DIR,
+    TENSOR_CACHE_DIR,
+    MODEL_DIR,
     BEST_MODEL_PATH,
     # Self-Play Config
     DEFAULT_NUM_SELFPLAY_GAMES,
@@ -40,8 +42,8 @@ from config import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Ensure necessary directories exist, paths come from config.py
-os.makedirs(REPLAY_DIR, exist_ok=True)
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(TENSOR_CACHE_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helper Functions
@@ -92,13 +94,78 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int]:
     # Pass the game_num to the setup function for clearer logging
     setup_selfplay_opening(env, game_num)
 
-    game_examples, outcome_type, game_length = play_game(config, env)
+    game_examples, _, outcome_type, game_length = play_game(config, env)
 
     print(
         f"{prefix} Game finished. Outcome: {outcome_type}, Moves: {game_length}, Time: {format_time(time.time() - game_start_time)}",
         flush=True,
     )
     return game_examples, outcome_type, game_length
+
+
+def process_results(results, args):
+    """
+    Processes the results from all self-play workers.
+    Saves training data, aggregates stats, and logs them.
+    """
+    print(f"\nProcessing results from {len(results)} games...")
+
+    summary_counts = {}
+    game_lengths = []
+
+    # This is a small object, creating it once is fine.
+    encoder = MoveEncoder()
+
+    for game_examples, outcome_type, game_length in results:
+        summary_counts[outcome_type] = summary_counts.get(outcome_type, 0) + 1
+        game_lengths.append(game_length)
+
+        if game_examples:
+            # We now process and save each position as a separate tensor file.
+            for state_np, pi_np, z_value in game_examples:
+                # --- Original Data Point ---
+                state_tensor = torch.from_numpy(state_np.copy()).float()
+                pi_tensor = torch.from_numpy(pi_np.copy()).float()
+                z_tensor = torch.tensor([z_value], dtype=torch.float32)
+
+                data_id = uuid.uuid4()
+                torch.save(
+                    (state_tensor, pi_tensor, z_tensor),
+                    f"{TENSOR_CACHE_DIR}/data_{data_id}.pt",
+                )
+
+                # --- Augmented (Flipped) Data Point ---
+                flipped_state_np = np.ascontiguousarray(np.flip(state_np, axis=2))
+
+                original_pi_torch = torch.from_numpy(pi_np)
+                flipped_pi_torch = torch.zeros_like(original_pi_torch)
+                for i, prob in enumerate(original_pi_torch):
+                    if prob > 0:
+                        flipped_idx = encoder.flip_map[i]
+                        flipped_pi_torch[flipped_idx] = prob
+
+                flipped_state_tensor = torch.from_numpy(flipped_state_np).float()
+
+                flipped_data_id = uuid.uuid4()
+                torch.save(
+                    (flipped_state_tensor, flipped_pi_torch, z_tensor),
+                    f"{TENSOR_CACHE_DIR}/data_{flipped_data_id}.pt",
+                )
+
+    # --- Log summary statistics ---
+    avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
+
+    selfplay_summary = {
+        "selfplay_total_games": args.num_games,
+        "selfplay_avg_game_length": avg_length,
+    }
+    selfplay_summary.update({f"outcome_{k}": v for k, v in summary_counts.items()})
+
+    if wandb.run and not wandb.run.disabled:
+        wandb.log(selfplay_summary)
+
+    with open(args.result_file, "w") as f:
+        json.dump(selfplay_summary, f, indent=2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +175,11 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int]:
 
 def main(args):
     """Orchestrates the self-play data generation process using a pool of workers."""
-    # Initialize wandb for the main process
+
+    print(
+        f"Starting self-play for {args.num_games} games using {NUM_SELFPLAY_WORKERS} parallel workers...\n"
+    )
+
     wandb.init(
         project=PROJECT_NAME,
         group=args.gen_id,
@@ -117,9 +188,6 @@ def main(args):
         mode="disabled" if args.no_wandb else "online",
     )
 
-    print(
-        f"Starting self-play for {args.num_games} games using {NUM_SELFPLAY_WORKERS} parallel workers..."
-    )
     start_time = time.time()
 
     # Create a pool of worker processes
@@ -131,35 +199,9 @@ def main(args):
         f"\nAll self-play games finished in {format_time(time.time() - start_time)}. Processing results..."
     )
 
-    # Process the results from all workers
-    summary_counts = {}
-    game_lengths = []
-
-    for game_examples, outcome_type, game_length in results:
-        summary_counts[outcome_type] = summary_counts.get(outcome_type, 0) + 1
-        game_lengths.append(game_length)
-
-        if game_examples:
-            game_id = uuid.uuid4()
-            game_path = os.path.join(REPLAY_DIR, f"game_{outcome_type}_{game_id}.pkl")
-            with open(game_path, "wb") as f:
-                pickle.dump(game_examples, f)
+    process_results(results, args)
 
     manage_replay_buffer()
-
-    # Log summary statistics
-    avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
-
-    selfplay_summary = {
-        "selfplay_total_games": args.num_games,
-        "selfplay_avg_game_length": avg_length,
-    }
-    selfplay_summary.update({f"outcome_{k}": v for k, v in summary_counts.items()})
-
-    wandb.log(selfplay_summary)
-
-    with open(args.result_file, "w") as f:
-        json.dump(selfplay_summary, f, indent=2)
 
     wandb.finish()
 
@@ -172,7 +214,7 @@ if __name__ == "__main__":
         "--num-games",
         type=int,
         default=DEFAULT_NUM_SELFPLAY_GAMES,
-        help="Number of self-play games to generate.",
+        help=f"Number of self-play games to generate. Defaults to {DEFAULT_NUM_SELFPLAY_GAMES}.",
     )
     parser.add_argument(
         "--no-wandb", action="store_true", help="Disable wandb logging for this run."

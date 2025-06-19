@@ -1,12 +1,8 @@
 # train.py
 
-
 import os
-import pickle
 import argparse
 import wandb
-import random
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -16,20 +12,19 @@ import json
 from config import (
     # Project and File Paths
     PROJECT_NAME,
-    REPLAY_DIR,
+    TENSOR_CACHE_DIR,
     BEST_MODEL_PATH,
     CANDIDATE_MODEL_PATH,
     # Training Config
     NUM_TRAINING_WORKERS,
-    LEARNING_RATE,
-    WEIGHT_DECAY,
+    WARMUP_LEARNING_RATE,
+    WARMUP_WEIGHT_DECAY,
     BATCH_SIZE,
     MAX_EPOCHS,
     PATIENCE,
     TRAIN_WINDOW_SIZE,
 )
 from alphazero.model import AlphaZeroNet
-from alphazero.move_encoder import MoveEncoder
 from alphazero.utils import format_time
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,86 +32,50 @@ from alphazero.utils import format_time
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class AZDataset(Dataset):
+class TensorDataset(Dataset):
     """
-    Custom PyTorch Dataset with data augmentation.
-    With a 50% chance for each item, it will horizontally flip the board state
-    and policy vector.
+    A very simple PyTorch Dataset that loads ready-to-use tensors from a list of file paths.
     """
-
-    def __init__(self, examples, encoder: MoveEncoder):
-        self.examples = examples
-        self.encoder = encoder
+    def __init__(self, file_paths: list):
+        self.file_paths = file_paths
 
     def __len__(self):
-        return len(self.examples)
+        return len(self.file_paths)
 
     def __getitem__(self, idx):
-        state_np, pi_arr, z = self.examples[idx]
-
-        # Data Augmentation: 50% chance to flip horizontally
-        if random.random() < 0.5:
-            # Flip the board state tensor along the file (width) axis
-            state_np = np.ascontiguousarray(np.flip(state_np, axis=2))
-
-            # Flip the policy vector using the pre-computed map from the MoveEncoder
-            original_pi = torch.from_numpy(pi_arr)
-            flipped_pi = torch.zeros_like(original_pi)
-            for i, prob in enumerate(original_pi):
-                if prob > 0:
-                    flipped_idx = self.encoder.flip_map[i]
-                    flipped_pi[flipped_idx] = prob
-            pi_arr = flipped_pi.numpy()
-
-        x = torch.from_numpy(state_np).float()
-        pi = torch.from_numpy(pi_arr).float()
-        z_tensor = torch.tensor([z], dtype=torch.float32)
-        return x, pi, z_tensor
+        # Load a pre-processed tensor tuple (state, pi, z)
+        return torch.load(self.file_paths[idx], weights_only=True)
 
 
-def load_training_window(encoder: MoveEncoder):
+def load_tensor_files_for_training():
     """
-    Loads a random subset of games from the replay buffer directory.
-    This prevents memory issues with very large replay buffers on disk.
+    Loads a subset of the most recent .pt files from the replay cache for training.
     """
-    print(f"Searching for game files in '{REPLAY_DIR}'...", flush=True)
-    game_files = [
-        os.path.join(REPLAY_DIR, f)
-        for f in os.listdir(REPLAY_DIR)
-        if f.endswith(".pkl")
-    ]
-
-    if not game_files:
-        print("No game files found. Cannot train.", flush=True)
+    
+    # print(f"Searching for training data files in '{TENSOR_CACHE_DIR}'...", flush=True)
+    if not os.path.isdir(TENSOR_CACHE_DIR):
+        print(f"Error: Replay cache directory '{TENSOR_CACHE_DIR}' not found.", flush=True)
         return None
 
-    print(
-        f"Found {len(game_files)} total games. Loading a random window of ~{TRAIN_WINDOW_SIZE} positions...",
-        flush=True,
-    )
-    all_examples = []
-    # Keep loading random games until we hit our window size
-    while len(all_examples) < TRAIN_WINDOW_SIZE and game_files:
-        file_path = random.choice(game_files)
-        game_files.remove(file_path)  # Avoid picking the same game twice
-        try:
-            with open(file_path, "rb") as f:
-                all_examples.extend(pickle.load(f))
-        except Exception as e:
-            print(
-                f"Warning: Could not load or process {file_path}. Error: {e}",
-                flush=True,
-            )
+    tensor_files = [os.path.join(TENSOR_CACHE_DIR, f) for f in os.listdir(TENSOR_CACHE_DIR) if f.endswith(".pt")]
 
-    if not all_examples:
-        print(
-            "Failed to load any valid examples from the files sampled. Cannot train.",
-            flush=True,
-        )
+    if not tensor_files:
+        print(f"No training data files found in '{TENSOR_CACHE_DIR}'. Cannot train.", flush=True)
         return None
 
-    print(f"Loaded {len(all_examples)} positions for this training run.", flush=True)
-    return AZDataset(all_examples, encoder)
+    # Use the most recent files up to the window size
+    tensor_files.sort(key=os.path.getmtime, reverse=True)
+    
+    # Select a sample from the most recent files
+    files_to_load = tensor_files[:TRAIN_WINDOW_SIZE]
+    
+    # If the buffer is smaller than the window, use all files
+    if len(tensor_files) < TRAIN_WINDOW_SIZE:
+        print(f"Found {len(tensor_files)} total positions, which is less than the training window size of {TRAIN_WINDOW_SIZE}. Using all positions.", flush=True)
+    else:
+        print(f"Found {len(tensor_files)} total positions. Loading a window of the most recent {TRAIN_WINDOW_SIZE}.", flush=True)
+        
+    return TensorDataset(files_to_load)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,7 +98,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
     """
     is_cuda = device == "cuda"
     optimizer = torch.optim.AdamW(
-        net.parameters(), lr=config.lr, weight_decay=config.weight_decay
+        net.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=config.max_epochs
@@ -236,7 +195,7 @@ def train(net, device, train_loader, val_loader, config, result_file):
         json.dump(results, f, indent=2)
 
     # --- Artifact Logging ---
-    if best_epoch != -1:
+    if best_epoch != -1 and wandb.run and not wandb.run.disabled:
         wandb.log(
             {
                 "best_validation_loss": best_val_loss,
@@ -268,25 +227,25 @@ def main():
     parser = argparse.ArgumentParser(description="Train a new AlphaZero model.")
     # --- Hyperparameters (for sweeps and manual runs) ---
     parser.add_argument(
-        "--lr", type=float, default=LEARNING_RATE, help="Learning rate."
+        "--learning-rate", type=float, default=WARMUP_LEARNING_RATE, help="Learning rate."
     )
     parser.add_argument(
-        "--weight_decay", type=float, default=WEIGHT_DECAY, help="Weight decay."
+        "--weight-decay", type=float, default=WARMUP_WEIGHT_DECAY, help="Weight decay."
     )
     parser.add_argument(
-        "--batch_size", type=int, default=BATCH_SIZE, help="Batch size for training."
+        "--batch-size", type=int, default=BATCH_SIZE, help="Batch size for training."
     )
     parser.add_argument(
-        "--max_epochs",
+        "--max-epochs",
         type=int,
         default=MAX_EPOCHS,
-        help="Maximum number of epochs to train for.",
+        help=f"Maximum number of epochs to train for. Defaults to {MAX_EPOCHS}.",
     )
     parser.add_argument(
         "--patience",
         type=int,
         default=PATIENCE,
-        help="Number of epochs to wait before early stopping.",
+        help=f"Number of epochs to wait before early stopping. Defaults to {PATIENCE}.",
     )
     # --- Control Arguments ---
     parser.add_argument(
@@ -295,7 +254,7 @@ def main():
     parser.add_argument(
         "--load-weights",
         action="store_true",
-        help="Load weights from best.pth to continue training.",
+        help="Load weights from best.pth to continue training. Defaults to False.",
     )
     # --- Arguments for Pipeline/Manual mode ---
     parser.add_argument(
@@ -318,17 +277,16 @@ def main():
         # No need to specify group, name, or job_type as the sweep controls this.
         run = wandb.init(
             project=PROJECT_NAME,
-            config=args,
+            config=vars(args),
             mode="disabled" if args.no_wandb else "online",
+            job_type="sweep",
         )
-        # Update job_type after init for clarity in the W&B dashboard
-        wandb.run.job_type = "sweep"
 
     else:
         # --- Single Run Mode (Pipeline or Manual) ---
         run = wandb.init(
             project=PROJECT_NAME,
-            config=args,
+            config=vars(args),
             group=args.gen_id,
             name=f"{args.gen_id}-training",
             job_type="training",
@@ -346,9 +304,7 @@ def main():
         else:
             print("No weights loaded. Starting from scratch.", flush=True)
 
-        encoder = MoveEncoder()
-
-        full_dataset = load_training_window(encoder)
+        full_dataset = load_tensor_files_for_training()
         if not full_dataset:
             print("No data found, exiting run.", flush=True)
             return
@@ -363,6 +319,7 @@ def main():
             shuffle=True,
             num_workers=NUM_TRAINING_WORKERS,
             pin_memory=True,
+            persistent_workers=True,
         )
 
         val_loader = DataLoader(
@@ -371,6 +328,7 @@ def main():
             shuffle=False,
             num_workers=NUM_TRAINING_WORKERS,
             pin_memory=True,
+            persistent_workers=True,
         )
 
         train(net, device, train_loader, val_loader, config, args.result_file)

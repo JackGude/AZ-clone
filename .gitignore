@@ -16,8 +16,9 @@ env/
 
 # Logs and generated data (DO NOT TRACK THESE)
 /logs/
-/checkpoints/
+/models/
 /replay_buffer/
+/replay_cache/
 /wandb/
 
 # Local configuration files (if you ever add any)

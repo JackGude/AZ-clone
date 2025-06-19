@@ -3,11 +3,12 @@
 import os
 import sys
 import time
+import signal
 import subprocess
 import argparse
 from config import (
     # Project and File Paths
-    CHECKPOINT_DIR,
+    MODEL_DIR,
     LOGS_DIR,
     BEST_MODEL_PATH,
     CANDIDATE_MODEL_PATH,
@@ -21,16 +22,20 @@ from config import (
     AUTOMATE_WIN_THRESHOLD,
     AUTOMATE_WARMUP_GENS,
     AUTOMATE_EVAL_TIME_LIMIT,
+    # Training Config
+    WARMUP_LEARNING_RATE,
+    WARMUP_WEIGHT_DECAY,
+    LEARNING_RATE,
+    WEIGHT_DECAY
 )
 import json
-from alphazero.utils import format_time, promote_candidate
+from alphazero.utils import format_time, promote_candidate, signal_handler
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-# The directory to store checkpoints.
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,10 +93,21 @@ def run_training(generation_id_str, is_warmup):
     print(f"\n=== [AUTO] {generation_id_str} --> Running Training ===")
     log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training.log")
     result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training_result.json")
+    
+    if is_warmup:
+        learning_rate = WARMUP_LEARNING_RATE
+        weight_decay = WARMUP_WEIGHT_DECAY
+    else:
+        learning_rate = LEARNING_RATE
+        weight_decay = WEIGHT_DECAY
 
     cmd = [
         sys.executable,
         TRAIN_SCRIPT,
+        "--learning-rate",
+        str(learning_rate),
+        "--weight-decay",
+        str(weight_decay),
         "--gen-id",
         generation_id_str,
         "--result-file",
@@ -164,10 +180,11 @@ def run_evaluation(generation_id_str, is_warmup=False):
 def main(args):
     """The main automation loop that drives the generations of self-play and training."""
 
-    # This check ensures that if a 'stop.txt' was left over from a previous
-    # run, it won't prevent the script from starting.
+    # Register the signal handler
+    signal.signal(signal.SIGINT, signal_handler)
+
     if os.path.exists(STOP_FILE):
-        os.remove(STOP_FILE)  # Clean up the file for the next time
+        os.remove(STOP_FILE)
 
     generation = args.start_generation
 
@@ -180,7 +197,6 @@ def main(args):
     print(f"  - Warm-up generations: {AUTOMATE_WARMUP_GENS}")
     print(f"{'#' * 80}\n")
 
-    # The main continuous loop
     while True:
         is_warmup = generation <= AUTOMATE_WARMUP_GENS
         generation_id_str = f"gen-{generation:03d}"
@@ -191,7 +207,7 @@ def main(args):
         selfplay_start_time = time.time()
         run_selfplay(generation_id_str)
         print(
-            f"<<< Self-Play finished in {format_time(time.time() - selfplay_start_time)}"
+            f"\n<<< Self-Play finished in {format_time(time.time() - selfplay_start_time)}"
         )
 
         # Step 2: Train a new candidate model
@@ -199,7 +215,7 @@ def main(args):
         training_start_time = time.time()
         run_training(generation_id_str, is_warmup)
         print(
-            f"<<< Training finished in {format_time(time.time() - training_start_time)}"
+            f"\n<<< Training finished in {format_time(time.time() - training_start_time)}"
         )
 
         # Step 3: Evaluate the candidate
@@ -207,7 +223,7 @@ def main(args):
         evaluation_start_time = time.time()
         run_evaluation(generation_id_str, is_warmup)
         print(
-            f"<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}"
+            f"\n<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}"
         )
 
         if os.path.exists(STOP_FILE):
@@ -215,8 +231,8 @@ def main(args):
                 "\n[AUTO] 'stop.txt' file detected. Shutting down gracefully after this generation.",
                 flush=True,
             )
-            os.remove(STOP_FILE)  # Clean up the file for the next time
-            break  # Exit the while loop
+            os.remove(STOP_FILE)
+            break
 
         generation += 1
 

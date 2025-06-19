@@ -1,14 +1,10 @@
 # evaluate.py
 
-import os
-import torch
-import chess
 import argparse
 import time
 import json
 import wandb
 import sys
-import csv
 import multiprocessing
 from itertools import repeat
 from automate import format_time
@@ -50,9 +46,11 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
     prefix = f"[Worker {game_idx + 1}]"
 
     # Determine which model plays which color for this game
-    if game_idx % 2 == 0:
+    is_new_white = game_idx % 2 == 0
+    if is_new_white:
         white_path = new_model_path
         black_path = old_model_path
+        is_new_white = True
         print(
             f"{prefix} Game {game_idx + 1}/{num_total_games}... (New plays as White)",
             file=sys.stderr,
@@ -97,7 +95,7 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
         log_prefix=prefix,
     )
 
-    _, outcome_type, move_count = play_game(config, env=env)
+    _, numerical_outcome, outcome_type, move_count = play_game(config, env=env)
 
     print(
         f"{prefix} Game finished. Outcome: {outcome_type}, Moves: {move_count}",
@@ -105,16 +103,10 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
     )
 
     # Convert outcome to a score from the NEW model's perspective.
-    if (outcome_type in ["white_win", "resign_black"] and game_idx % 2 == 0) or (
-        outcome_type in ["black_win", "resign_white"] and game_idx % 2 != 0
-    ):
-        return 1.0  # New model won
-    elif (outcome_type in ["black_win", "resign_white"] and game_idx % 2 == 0) or (
-        outcome_type in ["white_win", "resign_black"] and game_idx % 2 != 0
-    ):
-        return -1.0  # New model lost
+    if is_new_white:
+        return numerical_outcome
     else:
-        return 0.0  # Draw
+        return -numerical_outcome
 
 
 # ─────────────────────────────────────────────────────────────────────────────

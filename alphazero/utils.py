@@ -1,18 +1,31 @@
 # alphazero/utils.py
+
+# -----------------------------------------------------------------------------
+#  Standard Library Imports
+# -----------------------------------------------------------------------------
 import os
 import random
 import shutil
-import pandas as pd
 import csv
+import sys
+
+# -----------------------------------------------------------------------------
+#  Third-Party Imports
+# -----------------------------------------------------------------------------
+import pandas as pd
+
+# -----------------------------------------------------------------------------
+#  Local Imports
+# -----------------------------------------------------------------------------
 from .env import ChessEnv
 from config import (
+    TENSOR_CACHE_DIR,
     OPENINGS_SELFPLAY_PATH,
     OPENINGS_EVAL_PATH,
-    REPLAY_DIR,
-    MAX_GAMES_IN_BUFFER,
+    MAX_FILES_IN_BUFFER,
     AUTOMATE_WIN_THRESHOLD,
-    CANDIDATE_MODEL_PATH,
     BEST_MODEL_PATH,
+    CANDIDATE_MODEL_PATH,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +60,14 @@ except FileNotFoundError:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def signal_handler(sig, frame):
+    """
+    Handles the CTRL+C signal to allow for a graceful shutdown.
+    """
+    print("\n\nCTRL+C detected! Shutting down the automation pipeline immediately.")
+    sys.exit(0)
+
+
 def format_time(seconds):
     """Formats a time in seconds into a human-readable string."""
     minutes, seconds = divmod(int(seconds), 60)
@@ -78,22 +99,27 @@ def setup_selfplay_opening(env: ChessEnv, game_num: int = 0):
 
 def manage_replay_buffer():
     """
-    Keeps a maximum number of recent DRAW games, while preserving all WIN/LOSS games.
+    Ensures the number of files in the replay buffer directory does not exceed a maximum.
+    Deletes the oldest files if the limit is surpassed.
     """
     try:
-        all_game_files = [
-            os.path.join(REPLAY_DIR, f)
-            for f in os.listdir(REPLAY_DIR)
-            if f.endswith(".pkl")
+        files = [
+            os.path.join(TENSOR_CACHE_DIR, f)
+            for f in os.listdir(TENSOR_CACHE_DIR)
+            if f.endswith(".pt")
         ]
-        draw_files = [
-            f for f in all_game_files if "draw" in os.path.basename(f).lower()
-        ]
-        draw_files.sort(key=os.path.getmtime)
+        if len(files) > MAX_FILES_IN_BUFFER:
+            # Sort files by modification time (oldest first)
+            files.sort(key=os.path.getmtime)
 
-        while len(draw_files) > MAX_GAMES_IN_BUFFER:
-            file_to_delete = draw_files.pop(0)
-            os.remove(file_to_delete)
+            num_to_delete = len(files) - MAX_FILES_IN_BUFFER
+            for i in range(num_to_delete):
+                os.remove(files[i])
+
+            print(
+                f"Replay buffer exceeded {MAX_FILES_IN_BUFFER} files. Deleted {num_to_delete} oldest files."
+            )
+
     except Exception as e:
         print(f"Warning: Could not manage replay buffer. Error: {e}", flush=True)
 
