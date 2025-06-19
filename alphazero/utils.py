@@ -130,14 +130,14 @@ def promote_candidate(win_rate):
     """
     if win_rate >= AUTOMATE_WIN_THRESHOLD:
         print(
-            f"→ Candidate met win threshold ({win_rate:.2f} >= {AUTOMATE_WIN_THRESHOLD}). Promoting to 'best.pth'."
+            f"\n→ Candidate met win threshold ({win_rate:.2f} >= {AUTOMATE_WIN_THRESHOLD}). Promoting to 'best.pth'."
         )
         # Use rename for an atomic operation, replacing the old best model.
         shutil.move(CANDIDATE_MODEL_PATH, BEST_MODEL_PATH)
         return True
     else:
         print(
-            f"→ Candidate failed to meet win threshold ({win_rate:.2f} < {AUTOMATE_WIN_THRESHOLD}). Discarding."
+            f"\n→ Candidate failed to meet win threshold ({win_rate:.2f} < {AUTOMATE_WIN_THRESHOLD}). Discarding."
         )
         os.remove(CANDIDATE_MODEL_PATH)
         return False

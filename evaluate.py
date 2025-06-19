@@ -69,9 +69,7 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
     env = ChessEnv()
     opening_name, opening_fen = EVALUATION_OPENINGS[game_idx % len(EVALUATION_OPENINGS)]
     env.set_board_from_fen(opening_fen)
-    print(
-        f"{prefix} Starting with opening: {opening_name}", file=sys.stderr, flush=True
-    )
+    # print(f"{prefix} Starting with opening: {opening_name}", file=sys.stderr, flush=True)
 
     # Create a configuration for an evaluation game
     config = GameConfig(
@@ -91,7 +89,7 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
         draw_adjudication_patience=DRAW_ADJUDICATION_PATIENCE,
         resign_threshold=1.1,
         selfplay_max_moves=1000,
-        verbose=True,
+        verbose=False,
         log_prefix=prefix,
     )
 
@@ -109,6 +107,41 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
         return -numerical_outcome
 
 
+def log_evaluation_to_wandb(results, win_rate, wins, losses, draws):
+    """
+    Logs detailed per-game data and a final summary for the evaluation match
+    to Weights & Biases.
+    """
+    if not (wandb.run and not wandb.run.disabled):
+        return # Do nothing if wandb is disabled
+
+    print("Logging results to Weights & Biases...")
+
+    # --- Create and log a detailed table of each game's result ---
+    eval_table = wandb.Table(columns=["Game Index", "New Model Color", "Opening", "Result"])
+    
+    for i, score in enumerate(results):
+        new_model_color = "White" if i % 2 == 0 else "Black"
+        # The global EVALUATION_OPENINGS list is available
+        opening_name, _ = EVALUATION_OPENINGS[i % len(EVALUATION_OPENINGS)]
+        
+        result_str = "Win" if score == 1.0 else "Loss" if score == -1.0 else "Draw"
+        
+        eval_table.add_data(i + 1, new_model_color, opening_name, result_str)
+
+    # --- Log the summary dictionary, including the results table ---
+    eval_summary = {
+        "eval_win_rate": win_rate,
+        "eval_wins": wins,
+        "eval_draws": draws,
+        "eval_losses": losses,
+        "evaluation_games_table": eval_table
+    }
+    
+    wandb.log(eval_summary)
+    print("Finished logging to Weights & Biases.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main Execution Block
 # ─────────────────────────────────────────────────────────────────────────────
@@ -118,17 +151,17 @@ def evaluate(
     checkpoint_old, checkpoint_new, num_games, time_limit, num_workers, result_file
 ):
     """
-    Orchestrates a head-to-head match using a pool of parallel workers.
+    Orchestrates a head-to-head evaluation using a pool of parallel workers.
     """
     if not EVALUATION_OPENINGS:
         print(
-            "Error: Evaluation openings are not loaded. Cannot start match.",
+            "Error: Evaluation openings are not loaded. Cannot start evaluation.",
             file=sys.stderr,
         )
         return
 
     print(
-        f"\n--- Starting match: {num_games} games, {time_limit}s per move, {num_workers} workers ---",
+        f"\n--- Starting evaluation: {num_games} games, {time_limit}s per move, {num_workers} workers ---",
         file=sys.stderr,
         flush=True,
     )
@@ -163,17 +196,9 @@ def evaluate(
         file=sys.stderr,
         flush=True,
     )
-    print(f"Win Rate of NEW model: {win_rate * 100:.1f}%", file=sys.stderr, flush=True)
+    print(f"Win Rate of NEW model: {win_rate*100:.1f}%", file=sys.stderr, flush=True)
 
-    if wandb.run:
-        wandb.log(
-            {
-                "eval_win_rate": win_rate,
-                "eval_wins": wins,
-                "eval_draws": draws,
-                "eval_losses": losses,
-            }
-        )
+    log_evaluation_to_wandb(results, win_rate, wins, losses, draws)
 
     with open(result_file, "w") as f:
         json.dump({"win_rate": win_rate}, f)

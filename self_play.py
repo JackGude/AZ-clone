@@ -60,13 +60,21 @@ def choose_time_limit(prefix: str):
     return time_limit
 
 
-def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int]:
+def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
     """
     This is the target function for each worker process. It plays one game.
     """
     prefix = f"[Worker {game_num + 1}]"
     print(f"{prefix} Starting game...", flush=True)
     game_start_time = time.time()
+
+    # Increase the dirichlet noise for 10% of games
+    if game_num% 10 == 0:
+        dirichlet_alpha = DIRICHLET_ALPHA * 2
+        dirichlet_epsilon = DIRICHLET_EPSILON * 2
+    else:
+        dirichlet_alpha = DIRICHLET_ALPHA
+        dirichlet_epsilon = DIRICHLET_EPSILON
 
     # Create a configuration for a self-play game
     config = GameConfig(
@@ -75,8 +83,8 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int]:
         time_limit=choose_time_limit(prefix),
         c_puct=SELFPLAY_CPUCT,
         use_dirichlet_noise=True,
-        dirichlet_alpha=DIRICHLET_ALPHA,
-        dirichlet_epsilon=DIRICHLET_EPSILON,
+        dirichlet_alpha=dirichlet_alpha,
+        dirichlet_epsilon=dirichlet_epsilon,
         use_temperature_sampling=True,
         temp_threshold=TEMP_THRESHOLD,
         use_adjudication=False,  # Adjudication is typically not used for self-play
@@ -94,13 +102,13 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int]:
     # Pass the game_num to the setup function for clearer logging
     setup_selfplay_opening(env, game_num)
 
-    game_examples, _, outcome_type, game_length = play_game(config, env)
+    game_positions, _, outcome_type, game_length = play_game(config, env)
 
     print(
         f"{prefix} Game finished. Outcome: {outcome_type}, Moves: {game_length}, Time: {format_time(time.time() - game_start_time)}",
         flush=True,
     )
-    return game_examples, outcome_type, game_length
+    return game_positions, outcome_type, game_length, config.time_limit
 
 
 def process_results(results, args):
@@ -112,17 +120,18 @@ def process_results(results, args):
 
     summary_counts = {}
     game_lengths = []
-
+    time_limits = []
     # This is a small object, creating it once is fine.
     encoder = MoveEncoder()
 
-    for game_examples, outcome_type, game_length in results:
+    for game_positions, outcome_type, game_length, time_limit in results:
         summary_counts[outcome_type] = summary_counts.get(outcome_type, 0) + 1
         game_lengths.append(game_length)
+        time_limits.append(time_limit)
 
-        if game_examples:
+        if game_positions:
             # We now process and save each position as a separate tensor file.
-            for state_np, pi_np, z_value in game_examples:
+            for state_np, pi_np, z_value in game_positions:
                 # --- Original Data Point ---
                 state_tensor = torch.from_numpy(state_np.copy()).float()
                 pi_tensor = torch.from_numpy(pi_np.copy()).float()
@@ -152,20 +161,47 @@ def process_results(results, args):
                     f"{TENSOR_CACHE_DIR}/data_{flipped_data_id}.pt",
                 )
 
-    # --- Log summary statistics ---
+    log_selfplay_to_wandb(results, summary_counts, game_lengths, args.num_games, time_limits)
+    
+    avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
+    json_summary = {
+        "selfplay_total_games": args.num_games,
+        "selfplay_avg_game_length": avg_length,
+        "outcomes": summary_counts
+    }
+    with open(args.result_file, "w") as f:
+        json.dump(json_summary, f, indent=2)
+
+    print("Self-play data processing complete.")
+
+
+def log_selfplay_to_wandb(results, summary_counts, game_lengths, num_total_games, time_limits):
+    """
+    Logs detailed per-game data and a final summary to Weights & Biases.
+    """
+    if not (wandb.run and not wandb.run.disabled):
+        return # Do nothing if wandb is disabled
+
+    print("Logging results to Weights & Biases...")
+
+    # --- Create and log a detailed table of each game ---
+    selfplay_table = wandb.Table(columns=["Game Index", "Outcome", "Game Length", "Time Limit"])
+    for i, (_, outcome_type, game_length, time_limit) in enumerate(results):
+        selfplay_table.add_data(i + 1, outcome_type, game_length, time_limit)
+    
+    # --- Create and log the summary dictionary ---
     avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
 
     selfplay_summary = {
-        "selfplay_total_games": args.num_games,
+        "selfplay_total_games": num_total_games,
         "selfplay_avg_game_length": avg_length,
+        "selfplay_results_table": selfplay_table # Embed the table in the summary
     }
+    # Add the individual outcome counts to the summary
     selfplay_summary.update({f"outcome_{k}": v for k, v in summary_counts.items()})
 
-    if wandb.run and not wandb.run.disabled:
-        wandb.log(selfplay_summary)
-
-    with open(args.result_file, "w") as f:
-        json.dump(selfplay_summary, f, indent=2)
+    wandb.log(selfplay_summary)
+    print("Finished logging to Weights & Biases.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ from config import (
     WARMUP_LEARNING_RATE,
     WARMUP_WEIGHT_DECAY,
     LEARNING_RATE,
-    WEIGHT_DECAY
+    WEIGHT_DECAY,
 )
 import json
 from alphazero.utils import format_time, promote_candidate, signal_handler
@@ -93,7 +93,7 @@ def run_training(generation_id_str, is_warmup):
     print(f"\n=== [AUTO] {generation_id_str} --> Running Training ===")
     log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training.log")
     result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training_result.json")
-    
+
     if is_warmup:
         learning_rate = WARMUP_LEARNING_RATE
         weight_decay = WARMUP_WEIGHT_DECAY
@@ -187,6 +187,7 @@ def main(args):
         os.remove(STOP_FILE)
 
     generation = args.start_generation
+    current_step = args.start_step
 
     print(f"\n{'#' * 20} Starting AlphaZero Training Loop {'#' * 20}")
     print(f"Starting from generation {generation}")
@@ -203,28 +204,33 @@ def main(args):
         print(f"\n{'#' * 20} {generation_id_str} {'#' * 20}")
 
         # Step 1: Generate new self-play data
-        print(f"\n>>> Step 1: Running Self-Play for {generation_id_str}")
-        selfplay_start_time = time.time()
-        run_selfplay(generation_id_str)
-        print(
-            f"\n<<< Self-Play finished in {format_time(time.time() - selfplay_start_time)}"
-        )
+        if current_step == "selfplay":
+            print(f"\n>>> Step 1: Running Self-Play for {generation_id_str}")
+            selfplay_start_time = time.time()
+            run_selfplay(generation_id_str)
+            print(
+                f"\n<<< Self-Play finished in {format_time(time.time() - selfplay_start_time)}"
+            )
+            current_step = "training"
 
         # Step 2: Train a new candidate model
-        print(f"\n>>> Step 2: Running Training for {generation_id_str}")
-        training_start_time = time.time()
-        run_training(generation_id_str, is_warmup)
-        print(
-            f"\n<<< Training finished in {format_time(time.time() - training_start_time)}"
-        )
+        if current_step == "training":
+            print(f"\n>>> Step 2: Running Training for {generation_id_str}")
+            training_start_time = time.time()
+            run_training(generation_id_str, is_warmup)
+            print(
+                f"\n<<< Training finished in {format_time(time.time() - training_start_time)}"
+            )
+            current_step = "evaluation"
 
         # Step 3: Evaluate the candidate
-        print(f"\n>>> Step 3: Running Evaluation for {generation_id_str}")
-        evaluation_start_time = time.time()
-        run_evaluation(generation_id_str, is_warmup)
-        print(
-            f"\n<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}"
-        )
+        if current_step == "evaluation":
+            print(f"\n>>> Step 3: Running Evaluation for {generation_id_str}")
+            evaluation_start_time = time.time()
+            run_evaluation(generation_id_str, is_warmup)
+            print(
+                f"\n<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}"
+            )
 
         if os.path.exists(STOP_FILE):
             print(
@@ -235,6 +241,7 @@ def main(args):
             break
 
         generation += 1
+        current_step = "selfplay"
 
 
 if __name__ == "__main__":
@@ -246,6 +253,19 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="The generation number to start the loop from. Defaults to 1.",
+    )
+    parser.add_argument(
+        "--num-generations",
+        type=int,
+        default=100,
+        help="The number of generations to run. Defaults to 100.",
+    )
+    parser.add_argument(
+        "--start-step",
+        type=str,
+        default="selfplay",
+        help="The step to start the loop from. Defaults to selfplay.",
+        choices=["selfplay", "training", "evaluation"],
     )
     args = parser.parse_args()
     main(args)

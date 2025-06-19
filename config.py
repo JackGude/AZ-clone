@@ -24,7 +24,7 @@ STOP_FILE = "stop.txt"  # If this file exists, the automation will stop after th
 # -----------------------------------------------------------------------------
 #  Automation Pipeline Config (automate.py)
 # -----------------------------------------------------------------------------
-AUTOMATE_NUM_SELFPLAY_GAMES = 250  # Number of self-play games to generate per generation
+AUTOMATE_NUM_SELFPLAY_GAMES = 600  # Number of self-play games to generate per generation
 AUTOMATE_NUM_EVAL_GAMES = 24  # Number of games to play to compare models
 AUTOMATE_WIN_THRESHOLD = 0.52  # Win rate needed for a candidate to be promoted
 AUTOMATE_WARMUP_GENS = 15  # Number of initial generations to run without evaluation
