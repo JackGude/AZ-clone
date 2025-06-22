@@ -25,6 +25,7 @@ class GameConfig:
     use_temperature_sampling: bool
     temp_threshold: int
     use_adjudication: bool
+    adjudication_start_move: int
     win_adjudication_threshold: float
     win_adjudication_patience: int
     draw_adjudication_threshold: float
@@ -38,45 +39,50 @@ class GameConfig:
 def adjudicate_game(
     q_value: float,
     is_white_turn: bool,
-    win_threshold: float,
-    win_patience: int,
-    draw_threshold: float,
-    draw_patience: int,
+    move_count: int,
+    config: GameConfig,  # Passing the whole config is cleaner
     white_win_streak: int,
     black_win_streak: int,
     draw_streak: int,
 ) -> Tuple[Optional[float], int, int, int]:
     """
     Helper function to check if a game should be adjudicated.
-    Now takes the post-MCTS Q-value directly.
+    Now includes a "grace period" before any adjudication can occur.
     """
-    # --- 1. Normalize the Q-value to always be from White's perspective ---
+    # --- 1. Normalize the Q-value ---
     q_white_perspective = q_value if is_white_turn else -q_value
 
-    # --- 2. Update all streak counters based on the current evaluation ---
+    # --- 2. Do nothing if we are within the adjudication grace period ---
+    if move_count <= config.adjudication_start_move:
+        # Return all streaks unmodified and no outcome
+        return None, 0, 0, 0
+
+    # --- 3. Update all streak counters based on the current evaluation ---
     # Update win streak
-    if q_white_perspective > win_threshold:
+    if q_white_perspective > config.win_adjudication_threshold:
         white_win_streak += 1
     else:
         white_win_streak = 0
+
     # Update loss streak
-    if q_white_perspective < -win_threshold:
+    if q_white_perspective < -config.win_adjudication_threshold:
         black_win_streak += 1
     else:
         black_win_streak = 0
+
     # Update draw streak
-    if abs(q_white_perspective) < draw_threshold:
+    if abs(q_white_perspective) < config.draw_adjudication_threshold:
         draw_streak += 1
     else:
         draw_streak = 0
 
-    # --- 3. Check for an outcome based on the updated streaks ---
+    # --- 4. Check for an outcome based on the updated streaks ---
     outcome = None
-    if white_win_streak >= win_patience:
+    if white_win_streak >= config.win_adjudication_patience:
         outcome = 1.0  # White win
-    elif black_win_streak >= win_patience:
+    elif black_win_streak >= config.win_adjudication_patience:
         outcome = -1.0  # Black win
-    elif draw_streak >= draw_patience:
+    elif draw_streak >= config.draw_adjudication_patience:
         outcome = 0.0  # Draw
 
     return outcome, white_win_streak, black_win_streak, draw_streak
@@ -84,7 +90,7 @@ def adjudicate_game(
 
 def play_game(
     config: GameConfig, env: Optional[ChessEnv] = None
-) -> Tuple[List[dict], Optional[float], str, int]:
+) -> Tuple[List[dict], Optional[float], str, int, ChessEnv]:
     """
     Play a single game of chess using the provided configuration.
     Accepts an optional ChessEnv object.
@@ -112,7 +118,9 @@ def play_game(
             torch.load(config.black_model_path, map_location=device, weights_only=True)
         )
         if config.verbose:
-            print(f"{config.log_prefix} Loaded black model from {config.black_model_path}")
+            print(
+                f"{config.log_prefix} Loaded black model from {config.black_model_path}"
+            )
         black_model.eval()
 
     # Create MCTS instances
@@ -162,10 +170,8 @@ def play_game(
                 adjudicate_game(
                     q_value=root.Q,
                     is_white_turn=is_white_turn,
-                    win_threshold=config.win_adjudication_threshold,
-                    win_patience=config.win_adjudication_patience,
-                    draw_threshold=config.draw_adjudication_threshold,
-                    draw_patience=config.draw_adjudication_patience,
+                    move_count=move_count,
+                    config=config,
                     white_win_streak=white_win_streak,
                     black_win_streak=black_win_streak,
                     draw_streak=draw_streak,
@@ -250,24 +256,20 @@ def play_game(
     # --- Game is over, determine final outcome ---
     if outcome is None:
         board_outcome = env.board.outcome(claim_draw=True)
-        if board_outcome is None:  # Should only happen on move cap
+        if board_outcome is None:
             outcome = 0.0
             outcome_type = "draw_cap"
         else:
-            outcome = (
-                0.0
-                if board_outcome.winner is None
-                else 1.0
-                if board_outcome.winner
-                else -1.0
-            )
-            outcome_type = (
-                "checkmate_white"
-                if outcome == 1.0
-                else "checkmate_black"
-                if outcome == -1.0
-                else "draw_game"
-            )
+            # Use a standard if/elif/else block for clarity and correctness
+            if board_outcome.winner is True: # White wins
+                outcome = 1.0
+                outcome_type = 'checkmate_white'
+            elif board_outcome.winner is False: # Black wins
+                outcome = -1.0
+                outcome_type = 'checkmate_black'
+            else: # Draw
+                outcome = 0.0
+                outcome_type = 'draw_game'
 
     # Set final z-value for training examples
     final_examples = []
@@ -277,4 +279,4 @@ def play_game(
             state_tensor = encode_history(record["state_history"])
             final_examples.append((state_tensor.numpy(), record["pi"], z_value))
 
-    return final_examples, outcome, outcome_type, move_count
+    return final_examples, outcome, outcome_type, move_count, env

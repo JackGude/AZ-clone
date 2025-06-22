@@ -1,4 +1,4 @@
-# evaluate.py
+# eval.py
 
 import argparse
 import time
@@ -7,12 +7,16 @@ import wandb
 import sys
 import multiprocessing
 from itertools import repeat
-from automate import format_time
+from chess import pgn
+from chess.pgn import StringExporter
+import os
+import random
+import pandas as pd
 
 # --- Local Project Imports ---
 from alphazero.game_runner import GameConfig, play_game
 from alphazero.env import ChessEnv
-from alphazero.utils import EVALUATION_OPENINGS  # <-- Import from utils
+from alphazero.utils import format_time, ensure_project_root
 
 # --- Config Imports ---
 from config import (
@@ -20,11 +24,14 @@ from config import (
     PROJECT_NAME,
     BEST_MODEL_PATH,
     CANDIDATE_MODEL_PATH,
+    EVAL_GAMES_DIR,
+    OPENINGS_EVAL_PATH,
     # Evaluation Config
     NUM_EVAL_WORKERS,
     DEFAULT_NUM_EVAL_GAMES,
     DEFAULT_EVAL_TIME_LIMIT,
     DEFAULT_EVAL_CPUCT,
+    ADJUDICATION_START_MOVE,
     DRAW_ADJUDICATION_THRESHOLD,
     DRAW_ADJUDICATION_PATIENCE,
     WIN_ADJUDICATION_THRESHOLD,
@@ -33,24 +40,45 @@ from config import (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Load Evaluation Openings
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    EVALUATION_OPENINGS = pd.read_csv(OPENINGS_EVAL_PATH)
+    # print(f"Successfully loaded {len(SELFPLAY_OPENINGS)} openings for self-play.")
+except FileNotFoundError:
+    print(
+        f"Warning: {OPENINGS_EVAL_PATH} not found."
+    )
+    EVALUATION_OPENINGS = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Helper Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_total_games):
+def run_eval_worker(
+    game_idx,
+    old_model_path,
+    new_model_path,
+    time_limit,
+    num_total_games,
+    num_unique_openings,
+    openings,
+    gen_id,
+):
     """
     This is the target function for each worker process. It plays one evaluation game.
     """
 
-    # Create a prefix for logging that matches the self-play format
+    # --- Create a prefix for logging that matches the self-play format ---
     prefix = f"[Worker {game_idx + 1}]"
 
-    # Determine which model plays which color for this game
-    is_new_white = game_idx % 2 == 0
+    # --- Determine which model plays which color for this game ---
+    is_new_white = game_idx < num_unique_openings
     if is_new_white:
         white_path = new_model_path
         black_path = old_model_path
-        is_new_white = True
         print(
             f"{prefix} Game {game_idx + 1}/{num_total_games}... (New plays as White)",
             file=sys.stderr,
@@ -65,13 +93,13 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
             flush=True,
         )
 
-    # Setup the environment with the correct opening FEN
+    # --- Setup the environment with the correct opening moves ---
     env = ChessEnv()
-    opening_name, opening_fen = EVALUATION_OPENINGS[game_idx % len(EVALUATION_OPENINGS)]
-    env.set_board_from_fen(opening_fen)
+    opening_name, opening_moves = openings[game_idx % num_unique_openings]
+    env.set_board_from_moves(opening_moves)
     # print(f"{prefix} Starting with opening: {opening_name}", file=sys.stderr, flush=True)
 
-    # Create a configuration for an evaluation game
+    # --- Create a configuration for an evaluation game ---
     config = GameConfig(
         white_model_path=white_path,
         black_model_path=black_path,
@@ -83,6 +111,7 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
         use_temperature_sampling=False,
         temp_threshold=0,
         use_adjudication=True,
+        adjudication_start_move=ADJUDICATION_START_MOVE,
         win_adjudication_threshold=WIN_ADJUDICATION_THRESHOLD,
         win_adjudication_patience=WIN_ADJUDICATION_PATIENCE,
         draw_adjudication_threshold=DRAW_ADJUDICATION_THRESHOLD,
@@ -93,40 +122,78 @@ def run_eval_worker(game_idx, old_model_path, new_model_path, time_limit, num_to
         log_prefix=prefix,
     )
 
-    _, numerical_outcome, outcome_type, move_count = play_game(config, env=env)
+    # --- Create a PGN file for the game ---
+    game = pgn.Game()
+    game.headers["Event"] = f"Evaluation Match Gen {gen_id}"
+    game.headers["Site"] = "Local"
+    game.headers["Date"] = str(time.strftime("%Y.%m.%d"))
+    game.headers["Round"] = str(game_idx + 1)
+    game.headers["White"] = "New Model" if is_new_white else "Old Model"
+    game.headers["Black"] = "Old Model" if is_new_white else "New Model"
+    game.headers["Opening"] = opening_name
+
+    # --- Play the game ---
+    _, numerical_outcome, outcome_type, move_count, final_env = play_game(
+        config, env=env
+    )
+
+    # --- Save the game as a PGN file for analysis ---
+    game.add_line(final_env.board.move_stack)  # Add all moves from the game
+    game.headers["Result"] = final_env.board.result(claim_draw=True)
+    os.makedirs(os.path.join(EVAL_GAMES_DIR, gen_id), exist_ok=True)
+    pgn_path = os.path.join(
+        EVAL_GAMES_DIR, gen_id, f"game_{game_idx + 1}_{outcome_type}.pgn"
+    )
+
+    try:
+        # Use the dedicated StringExporter for robust writing
+        exporter = StringExporter(headers=True, variations=True, comments=True)
+        pgn_string = game.accept(exporter)
+        with open(pgn_path, "w", encoding="utf-8") as f:
+            f.write(pgn_string)
+    except Exception as e:
+        print(
+            f"{prefix} Failed to write PGN file {pgn_path}. Error: {e}", file=sys.stderr
+        )
 
     print(
         f"{prefix} Game finished. Outcome: {outcome_type}, Moves: {move_count}",
         flush=True,
     )
 
-    # Convert outcome to a score from the NEW model's perspective.
+    # --- Convert outcome to a score from the NEW model's perspective. ---
     if is_new_white:
         return numerical_outcome
     else:
         return -numerical_outcome
 
 
-def log_evaluation_to_wandb(results, win_rate, wins, losses, draws):
+def log_evaluation_to_wandb(
+    results, win_rate, wins, losses, draws, num_unique_openings, openings
+):
     """
     Logs detailed per-game data and a final summary for the evaluation match
     to Weights & Biases.
     """
     if not (wandb.run and not wandb.run.disabled):
-        return # Do nothing if wandb is disabled
+        return  # Do nothing if wandb is disabled
 
     print("Logging results to Weights & Biases...")
 
     # --- Create and log a detailed table of each game's result ---
-    eval_table = wandb.Table(columns=["Game Index", "New Model Color", "Opening", "Result"])
-    
+    eval_table = wandb.Table(
+        columns=["Game Index", "New Model Color", "Opening", "Result"]
+    )
+
     for i, score in enumerate(results):
-        new_model_color = "White" if i % 2 == 0 else "Black"
-        # The global EVALUATION_OPENINGS list is available
-        opening_name, _ = EVALUATION_OPENINGS[i % len(EVALUATION_OPENINGS)]
-        
+        if i < num_unique_openings:
+            new_model_color = "White"
+        else:
+            new_model_color = "Black"
+
+        opening_name, _ = openings[i % num_unique_openings]
         result_str = "Win" if score == 1.0 else "Loss" if score == -1.0 else "Draw"
-        
+
         eval_table.add_data(i + 1, new_model_color, opening_name, result_str)
 
     # --- Log the summary dictionary, including the results table ---
@@ -135,9 +202,9 @@ def log_evaluation_to_wandb(results, win_rate, wins, losses, draws):
         "eval_wins": wins,
         "eval_draws": draws,
         "eval_losses": losses,
-        "evaluation_games_table": eval_table
+        "evaluation_games_table": eval_table,
     }
-    
+
     wandb.log(eval_summary)
     print("Finished logging to Weights & Biases.")
 
@@ -148,17 +215,36 @@ def log_evaluation_to_wandb(results, win_rate, wins, losses, draws):
 
 
 def evaluate(
-    checkpoint_old, checkpoint_new, num_games, time_limit, num_workers, result_file
+    checkpoint_old,
+    checkpoint_new,
+    num_games,
+    time_limit,
+    num_workers,
+    result_file,
+    gen_id,
 ):
     """
     Orchestrates a head-to-head evaluation using a pool of parallel workers.
     """
-    if not EVALUATION_OPENINGS:
+    if EVALUATION_OPENINGS is None or EVALUATION_OPENINGS.empty:
         print(
             "Error: Evaluation openings are not loaded. Cannot start evaluation.",
             file=sys.stderr,
         )
         return
+    else:
+        # Convert DataFrame to list of tuples (opening_name, opening_moves)
+        openings = list(zip(EVALUATION_OPENINGS["name"], EVALUATION_OPENINGS["moves"]))
+        random.shuffle(openings)
+
+    if num_games % 2 != 0:
+        print(
+            "Error: Number of games must be even. Rounding up to the nearest even number.",
+            file=sys.stderr,
+        )
+        num_games += 1
+
+    num_unique_openings = min(len(openings), num_games // 2)
 
     print(
         f"\n--- Starting evaluation: {num_games} games, {time_limit}s per move, {num_workers} workers ---",
@@ -174,6 +260,9 @@ def evaluate(
         repeat(checkpoint_new),
         repeat(time_limit),
         repeat(num_games),
+        repeat(num_unique_openings),
+        repeat(openings),
+        repeat(gen_id),
     )
 
     # Create a pool of worker processes
@@ -196,9 +285,11 @@ def evaluate(
         file=sys.stderr,
         flush=True,
     )
-    print(f"Win Rate of NEW model: {win_rate*100:.1f}%", file=sys.stderr, flush=True)
+    print(f"Win Rate of NEW model: {win_rate * 100:.1f}%", file=sys.stderr, flush=True)
 
-    log_evaluation_to_wandb(results, win_rate, wins, losses, draws)
+    log_evaluation_to_wandb(
+        results, win_rate, wins, losses, draws, num_unique_openings, openings
+    )
 
     with open(result_file, "w") as f:
         json.dump({"win_rate": win_rate}, f)
@@ -221,11 +312,14 @@ def main(args):
         time_limit=args.time_limit,
         num_workers=NUM_EVAL_WORKERS,
         result_file=args.result_file,
+        gen_id=args.gen_id,
     )
 
     wandb.finish()
 
+
 if __name__ == "__main__":
+    ensure_project_root()
     parser = argparse.ArgumentParser(
         description="Evaluate two AlphaZeroNet checkpoints head-to-head."
     )
@@ -245,13 +339,13 @@ if __name__ == "__main__":
         "--games",
         type=int,
         default=DEFAULT_NUM_EVAL_GAMES,
-        help="Number of games to play. Defaults to 24.",
+        help=f"Number of games to play. Defaults to {DEFAULT_NUM_EVAL_GAMES}. Must be even.",
     )
     parser.add_argument(
         "--time-limit",
         type=int,
         default=DEFAULT_EVAL_TIME_LIMIT,
-        help="Time limit in seconds per move. Defaults to 10.",
+        help=f"Time limit in seconds per move. Defaults to {DEFAULT_EVAL_TIME_LIMIT}.",
     )
     parser.add_argument(
         "--no-wandb", action="store_true", help="Disable wandb logging."

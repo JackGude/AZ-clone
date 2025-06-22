@@ -18,9 +18,9 @@ A complete, end-to-end implementation of an AlphaZero-style chess engine in Pyth
 
 The engine's learning process is driven by three core pipeline components, orchestrated by the main `automate.py` script.
 
-1.  **`self_play.py` (Data Generation):** The current best model plays games against itself to generate high-quality training data.
-2.  **`train.py` (Model Training):** A new "candidate" model is trained on the data collected from the replay buffer. This script can be used for standard training or as part of a Weights & Biases hyperparameter sweep.
-3.  **`evaluate.py` (Model Evaluation):** The new candidate model plays a head-to-head match against the current best model. If the candidate wins by a sufficient margin, it is promoted to become the new "best."
+1.  **`pipeline/play.py` (Data Generation):** The current best model plays games against itself to generate high-quality training data.
+2.  **`pipeline/train.py` (Model Training):** A new "candidate" model is trained on the data collected from the replay buffer. This script can be used for standard training or as part of a Weights & Biases hyperparameter sweep.
+3.  **`pipeline/eval.py` (Model Evaluation):** The new candidate model plays a head-to-head match against the current best model. If the candidate wins by a sufficient margin, it is promoted to become the new "best."
 
 This cycle repeats indefinitely, allowing the model to gradually improve over many generations.
 
@@ -36,7 +36,7 @@ This cycle repeats indefinitely, allowing the model to gradually improve over ma
     conda create --name alphazero python=3.10
     conda activate alphazero
     ```
-3.  **Install dependencies:**
+3.  **Install dependencies (including alphazero directory in editable mode):**
     ```bash
     pip install -r requirements.txt
     ```
@@ -45,56 +45,60 @@ This cycle repeats indefinitely, allowing the model to gradually improve over ma
 
 This project is designed to be run either through the end-to-end automation script or by executing the individual components manually for debugging, analysis, or specific tasks.
 
+**It is highly recommended to run all commands from the project's root directory (`AZ-clone/`).**
+
 ### Automated Training (Primary Method)
 
-To run the entire training loop, use the main automation script. This will continuously generate data, train new models, and evaluate them.
+To run the entire training loop, use the main automation script:
 
 ```bash
 python automate.py
 ```
 
-To resume the training loop from a specific generation number:
+To resume the training loop from a specific generation and step:
 
 ```bash
-python automate.py --start-generation 15
+python automate.py --start-generation 5 --start-step train
 ```
 
 ### Manual Execution of Pipeline Components
 
-Each core script can be run by hand. This is useful for debugging, testing a single component, or running specialized jobs like a hyperparameter sweep.
+Each component script can be run by hand using Python's `-m` flag to ensure all imports work correctly. This is useful for debugging, testing, or running specialized jobs.
 
-**Common Argument:** All scripts accept a `--no-wandb` flag to disable Weights & Biases logging for a local or test run.
+**Common Argument:** All scripts accept a `--no-wandb` flag to disable Weights & Biases logging.
 
 #### 1\. Generating Self-Play Data
 
-To manually generate a specific number of games using the current best model:
+To manually generate a specific number of games:
 
 ```bash
-python self_play.py --num_games 100 --gen-id "manual-selfplay" --result-file "selfplay_results.json"
+python -m pipeline.play --num-games 100
 ```
 
 #### 2\. Training a Model
 
-The training script can be used to train a single model on the existing data in the `replay_buffer`. It also serves as the target for W\&B sweeps.
+To run a single training session manually (e.g., from scratch):
 
-  * **To run a single training session:**
-    ```bash
-    python train.py --gen-id "manual-training" --result-file "training_results.json"
-    ```
-  * **To run a hyperparameter sweep (using W\&B):**
-    1.  Define your sweep configuration in a `sweep.yaml` file.
-    2.  Initialize the sweep with `wandb sweep sweep.yaml`.
-    3.  Run the wandb agent, which will repeatedly call `train.py`:
-        ```bash
-        wandb agent <your-sweep-id>
-        ```
+```bash
+python -m pipeline.train --no-load-weights
+```
+
+To run a W\&B hyperparameter sweep:
+
+```bash
+# 1. Configure your tools/sweep.yaml file.
+# 2. Initialize the sweep:
+wandb sweep tools/sweep.yaml
+# 3. Run the agent (it will call `python -m pipeline.train`):
+wandb agent <your-sweep-id>
+```
 
 #### 3\. Evaluating Two Models
 
-To run a head-to-head match between two specific model checkpoints:
+To run a head-to-head match between two specific models:
 
 ```bash
-python evaluate.py --old "checkpoints/best.pth" --new "checkpoints/candidate.pth" --games 50 --gen-id "manual-eval" --result-file "eval_results.json"
+python -m pipeline.eval --old "models/best.pth" --new "models/candidate.pth"
 ```
 
 ### Playing Against the Model
@@ -102,12 +106,16 @@ python evaluate.py --old "checkpoints/best.pth" --new "checkpoints/candidate.pth
 To play a game against the current best model using the GUI:
 
 ```bash
-# Play as White (default)
-python gui_play.py
-
-# Play as Black and give the AI 10 seconds per move
-python gui_play.py --color black --time-limit 10
+python -m tools.gui_play
 ```
+
+To play as Black and give the AI 10 seconds per move:
+
+```bash
+python -m tools.gui_play --color black --time-limit 10
+```
+
+-----
 
 ### Working with Models from Weights & Biases
 

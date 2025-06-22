@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 import time
-import json
 
 from config import (
     # Project and File Paths
@@ -19,13 +18,15 @@ from config import (
     NUM_TRAINING_WORKERS,
     WARMUP_LEARNING_RATE,
     WARMUP_WEIGHT_DECAY,
+    LEARNING_RATE,
+    WEIGHT_DECAY,
     BATCH_SIZE,
     MAX_EPOCHS,
     PATIENCE,
     TRAIN_WINDOW_SIZE,
 )
 from alphazero.model import AlphaZeroNet
-from alphazero.utils import format_time
+from alphazero.utils import format_time, ensure_project_root
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Dataset Class & Data Loading
@@ -83,7 +84,7 @@ def load_tensor_files_for_training():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def train(net, device, train_loader, val_loader, config, result_file):
+def train(net, device, train_loader, val_loader, config):
     """
     The main training and validation loop for the model.
     It now takes a single 'config' object for all hyperparameters.
@@ -94,7 +95,6 @@ def train(net, device, train_loader, val_loader, config, result_file):
         train_loader: DataLoader for training data
         val_loader: DataLoader for validation data
         config: Configuration object containing hyperparameters
-        result_file: Path to write the training results JSON file
     """
     is_cuda = device == "cuda"
     optimizer = torch.optim.AdamW(
@@ -183,17 +183,6 @@ def train(net, device, train_loader, val_loader, config, result_file):
 
     total_training_time = time.time() - total_start_time
 
-    # Write training results to JSON file
-    results = {
-        "best_validation_loss": best_val_loss,
-        "best_epoch": best_epoch,
-        "total_training_time": total_training_time,
-        "early_stopped": epochs_without_improvement >= config.patience,
-    }
-
-    with open(result_file, "w") as f:
-        json.dump(results, f, indent=2)
-
     # --- Artifact Logging ---
     if best_epoch != -1 and wandb.run and not wandb.run.disabled:
         wandb.log(
@@ -219,54 +208,45 @@ def train(net, device, train_loader, val_loader, config, result_file):
 
 def main():
     """
-    This script's main function is designed for three execution contexts:
-    1. Pipeline Mode: Called by `automate.py` with specific arguments.
-    2. Manual Mode: Run directly by a user with default arguments.
-    3. Sweep Mode: Called by `wandb agent` for hyperparameter sweeps.
+    This script's main function is designed for three execution contexts...
     """
     parser = argparse.ArgumentParser(description="Train a new AlphaZero model.")
-    # --- Hyperparameters (for sweeps and manual runs) ---
-    parser.add_argument(
-        "--learning-rate", type=float, default=WARMUP_LEARNING_RATE, help="Learning rate."
-    )
-    parser.add_argument(
-        "--weight-decay", type=float, default=WARMUP_WEIGHT_DECAY, help="Weight decay."
-    )
-    parser.add_argument(
-        "--batch-size", type=int, default=BATCH_SIZE, help="Batch size for training."
-    )
-    parser.add_argument(
-        "--max-epochs",
-        type=int,
-        default=MAX_EPOCHS,
-        help=f"Maximum number of epochs to train for. Defaults to {MAX_EPOCHS}.",
-    )
-    parser.add_argument(
-        "--patience",
-        type=int,
-        default=PATIENCE,
-        help=f"Number of epochs to wait before early stopping. Defaults to {PATIENCE}.",
-    )
     # --- Control Arguments ---
     parser.add_argument(
         "--no-wandb", action="store_true", help="Disable Weights & Biases logging."
     )
     parser.add_argument(
         "--load-weights",
-        action="store_true",
-        help="Load weights from best.pth to continue training. Defaults to False.",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Load weights from best.pth to continue training.",
     )
     # --- Arguments for Pipeline/Manual mode ---
-    parser.add_argument(
-        "--gen-id", type=str, default="manual", help="Generation ID for this run."
-    )
-    parser.add_argument(
-        "--result-file",
-        type=str,
-        default="logs/training_results.json",
-        help="Path to write training results.\nDefault: logs/training_results.json",
-    )
+    parser.add_argument("--gen-id", type=str, default="manual", help="Generation ID for this run.")
+    
+    # --- Hyperparameters ---
+    # These are now defined based on the --load-weights flag
+    # They are not parsed from the command line for pipeline runs, but are for sweeps.
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=None)
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--max-epochs", type=int, default=MAX_EPOCHS)
+    parser.add_argument("--patience", type=int, default=PATIENCE)
+    
     args = parser.parse_args()
+
+    # For a W&B sweep, these will be overridden by the agent.
+    # For a pipeline run, this selects the correct defaults from config.py.
+    if args.load_weights: # This is a fine-tuning run
+        if args.learning_rate is None:
+            args.learning_rate = LEARNING_RATE
+        if args.weight_decay is None:
+            args.weight_decay = WEIGHT_DECAY
+    else: # This is a from-scratch (warmup) run
+        if args.learning_rate is None:
+            args.learning_rate = WARMUP_LEARNING_RATE
+        if args.weight_decay is None:
+            args.weight_decay = WARMUP_WEIGHT_DECAY
 
     # --- Initialize wandb based on the execution context ---
     is_sweep = os.getenv("WANDB_SWEEP_ID") is not None
@@ -331,7 +311,7 @@ def main():
             persistent_workers=True,
         )
 
-        train(net, device, train_loader, val_loader, config, args.result_file)
+        train(net, device, train_loader, val_loader, config)
 
     finally:
         if run:
@@ -339,4 +319,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_project_root()
     main()

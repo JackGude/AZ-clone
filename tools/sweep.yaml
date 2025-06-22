@@ -1,6 +1,6 @@
 # sweep.yaml
 
-program: train.py
+program: pipeline/train.py
 
 method: bayes
 
@@ -18,6 +18,11 @@ parameters:
   patience:
     value: 3
 
+  # If true: this is a fine-tuning run
+  # If false: this is a from-scratch (warmup) run
+  load-weights:
+    value: false
+
   learning-rate:
     distribution: log_uniform_values
     min: 0.00001
@@ -27,9 +32,3 @@ parameters:
     distribution: log_uniform_values
     min: 0.00001
     max: 0.0005
-
-command:
-  - ${interpreter}
-  - ${program}
-  - --load-weights
-  - ${args}

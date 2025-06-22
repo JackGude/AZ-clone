@@ -6,6 +6,7 @@ import time
 import signal
 import subprocess
 import argparse
+import shutil
 from config import (
     # Project and File Paths
     MODEL_DIR,
@@ -22,14 +23,10 @@ from config import (
     AUTOMATE_WIN_THRESHOLD,
     AUTOMATE_WARMUP_GENS,
     AUTOMATE_EVAL_TIME_LIMIT,
-    # Training Config
-    WARMUP_LEARNING_RATE,
-    WARMUP_WEIGHT_DECAY,
-    LEARNING_RATE,
-    WEIGHT_DECAY,
 )
 import json
-from alphazero.utils import format_time, promote_candidate, signal_handler
+from alphazero.utils import format_time, ensure_project_root
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
@@ -38,6 +35,8 @@ from alphazero.utils import format_time, promote_candidate, signal_handler
 os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
+current_subprocess = None
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Pipeline Steps
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,35 +44,48 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 
 def run_subprocess(cmd, log_path):
     """
-    Runs a command as a subprocess and redirects all output to a log file.
-
-    Args:
-        cmd: List of command and arguments to run
-        log_path: Path to the log file where output will be written
-
-    Raises:
-        RuntimeError: If the subprocess fails
+    Runs a command as a subprocess, allowing the main script to remain responsive to signals.
     """
-    # Ensure the log directory exists
+    global current_subprocess
+
+    # Create directories for the log and results
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
-    with open(log_path, "w") as log_file:
-        process = subprocess.Popen(
-            cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True
-        )
-        process.wait()
+    env = os.environ.copy()
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
 
-    if process.returncode != 0:
-        raise RuntimeError(
-            f"Execution of '{cmd[1]}' failed with exit code {process.returncode}"
+    with open(log_path, "w") as log_file:
+        # Use Popen to run the command with the correct environment
+        process = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            ),
+            preexec_fn=(os.setsid if sys.platform != "win32" else None),
         )
+        current_subprocess = process
+        return_code = process.wait()
+
+    process_was_terminated_by_handler = current_subprocess is None and return_code != 0
+    current_subprocess = None
+
+    if return_code != 0 and not process_was_terminated_by_handler:
+        error_message = (
+            f"Execution of '{' '.join(cmd)}' failed with exit code {return_code}.\n"
+            f"Check the log file for details: {log_path}"
+        )
+        raise RuntimeError(error_message)
 
 
 def run_selfplay(generation_id_str):
     """Runs the self-play script to generate new training data."""
     print(f"\n=== [AUTO] {generation_id_str} --> Running Self-Play ===")
-    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_selfplay.log")
-    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_selfplay_result.json")
+    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}/selfplay.log")
 
     cmd = [
         sys.executable,
@@ -81,9 +93,7 @@ def run_selfplay(generation_id_str):
         "--num-games",
         str(AUTOMATE_NUM_SELFPLAY_GAMES),
         "--gen-id",
-        generation_id_str,
-        "--result-file",
-        result_path,
+        generation_id_str
     ]
     run_subprocess(cmd, log_path)
 
@@ -91,29 +101,18 @@ def run_selfplay(generation_id_str):
 def run_training(generation_id_str, is_warmup):
     """Runs the training script, which saves its best model as 'candidate.pth'."""
     print(f"\n=== [AUTO] {generation_id_str} --> Running Training ===")
-    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training.log")
-    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_training_result.json")
-
-    if is_warmup:
-        learning_rate = WARMUP_LEARNING_RATE
-        weight_decay = WARMUP_WEIGHT_DECAY
-    else:
-        learning_rate = LEARNING_RATE
-        weight_decay = WEIGHT_DECAY
+    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}/training.log")
 
     cmd = [
         sys.executable,
         TRAIN_SCRIPT,
-        "--learning-rate",
-        str(learning_rate),
-        "--weight-decay",
-        str(weight_decay),
         "--gen-id",
         generation_id_str,
-        "--result-file",
-        result_path,
-        "--load-weights" if not is_warmup else "",
     ]
+    
+    if not is_warmup:
+        cmd.append("--load-weights")
+
     run_subprocess(cmd, log_path)
 
     # Verify that the training process successfully created a candidate model
@@ -139,8 +138,8 @@ def run_evaluation(generation_id_str, is_warmup=False):
         promote_candidate(1.0)
         return
 
-    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}_evaluation.log")
-    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}_eval_result.json")
+    log_path = os.path.join(LOGS_DIR, f"{generation_id_str}/evaluation.log")
+    result_path = os.path.join(LOGS_DIR, f"{generation_id_str}/eval_result.json")
 
     cmd = [
         sys.executable,
@@ -172,9 +171,53 @@ def run_evaluation(generation_id_str, is_warmup=False):
         raise RuntimeError("Evaluation completed but result file was not created")
 
 
+def promote_candidate(win_rate):
+    """
+    If the candidate's win rate is above the threshold, it replaces 'best.pth'.
+    """
+    if win_rate >= AUTOMATE_WIN_THRESHOLD:
+        print(
+            f"\n→ Candidate met win threshold ({win_rate:.2f} >= {AUTOMATE_WIN_THRESHOLD}). Promoting to 'best.pth'."
+        )
+        # Use rename for an atomic operation, replacing the old best model.
+        shutil.move(CANDIDATE_MODEL_PATH, BEST_MODEL_PATH)
+        return True
+    else:
+        print(
+            f"\n→ Candidate failed to meet win threshold ({win_rate:.2f} < {AUTOMATE_WIN_THRESHOLD}). Discarding."
+        )
+        os.remove(CANDIDATE_MODEL_PATH)
+        return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main Automation Loop
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def signal_handler(sig, frame):
+    """
+    Handles CTRL+C by forcefully terminating the current subprocess and its entire process tree.
+    """
+    global current_subprocess
+    print("\n\nCTRL+C detected! Shutting down...")
+
+    if current_subprocess:
+        print(f"--> Terminating subprocess tree for PID {current_subprocess.pid}")
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(current_subprocess.pid)],
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                os.killpg(os.getpgid(current_subprocess.pid), signal.SIGKILL)
+            print("--> Subprocess tree terminated successfully.")
+        except Exception as e:
+            print(f"--> Note: Subprocess may have already terminated. {e}")
+
+    sys.exit(0)
 
 
 def main(args):
@@ -231,6 +274,7 @@ def main(args):
             print(
                 f"\n<<< Evaluation finished in {format_time(time.time() - evaluation_start_time)}"
             )
+            current_step = "selfplay"
 
         if os.path.exists(STOP_FILE):
             print(
@@ -241,10 +285,10 @@ def main(args):
             break
 
         generation += 1
-        current_step = "selfplay"
 
 
 if __name__ == "__main__":
+    ensure_project_root()
     parser = argparse.ArgumentParser(
         description="Automate the AlphaZero training loop."
     )
