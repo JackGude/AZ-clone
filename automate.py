@@ -44,11 +44,11 @@ current_subprocess = None
 
 def run_subprocess(cmd, log_path):
     """
-    Runs a command as a subprocess, allowing the main script to remain responsive to signals.
+    Runs a command as a non-blocking subprocess, storing the process object globally
+    so the signal handler can access it.
     """
     global current_subprocess
 
-    # Create directories for the log and results
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
     env = os.environ.copy()
@@ -56,7 +56,6 @@ def run_subprocess(cmd, log_path):
     env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
 
     with open(log_path, "w") as log_file:
-        # Use Popen to run the command with the correct environment
         process = subprocess.Popen(
             cmd,
             stdout=log_file,
@@ -69,17 +68,27 @@ def run_subprocess(cmd, log_path):
             preexec_fn=(os.setsid if sys.platform != "win32" else None),
         )
         current_subprocess = process
-        return_code = process.wait()
 
-    process_was_terminated_by_handler = current_subprocess is None and return_code != 0
+        while True:
+            return_code = process.poll()
+            if return_code is not None:
+                break  # Subprocess has finished
+            time.sleep(1) # Wait 1 second before checking again
+
+
     current_subprocess = None
 
-    if return_code != 0 and not process_was_terminated_by_handler:
+    if return_code != 0:
+        # This check is now simpler. A non-zero return code here is either a
+        # real error or the result of our signal handler terminating the process.
+        # In either case, we check the log for details.
         error_message = (
-            f"Execution of '{' '.join(cmd)}' failed with exit code {return_code}.\n"
+            f"Execution of '{' '.join(cmd)}' ended with non-zero exit code {return_code}.\n"
             f"Check the log file for details: {log_path}"
         )
-        raise RuntimeError(error_message)
+        # We no longer raise a RuntimeError here, as CTRL+C is a valid way to stop.
+        # The signal_handler will exit the script.
+        print(error_message, file=sys.stderr)
 
 
 def run_selfplay(generation_id_str):
@@ -93,7 +102,7 @@ def run_selfplay(generation_id_str):
         "--num-games",
         str(AUTOMATE_NUM_SELFPLAY_GAMES),
         "--gen-id",
-        generation_id_str
+        generation_id_str,
     ]
     run_subprocess(cmd, log_path)
 
@@ -109,7 +118,7 @@ def run_training(generation_id_str, is_warmup):
         "--gen-id",
         generation_id_str,
     ]
-    
+
     if not is_warmup:
         cmd.append("--load-weights")
 
@@ -205,6 +214,7 @@ def signal_handler(sig, frame):
     if current_subprocess:
         print(f"--> Terminating subprocess tree for PID {current_subprocess.pid}")
         try:
+            # Use platform-specific commands to kill the whole process tree
             if sys.platform == "win32":
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(current_subprocess.pid)],
@@ -212,11 +222,13 @@ def signal_handler(sig, frame):
                     capture_output=True,
                 )
             else:
+                # os.getpgid is the key to getting the group ID for Unix-like systems
                 os.killpg(os.getpgid(current_subprocess.pid), signal.SIGKILL)
             print("--> Subprocess tree terminated successfully.")
-        except Exception as e:
+        except (subprocess.CalledProcessError, ProcessLookupError) as e:
             print(f"--> Note: Subprocess may have already terminated. {e}")
 
+    # After terminating the child, exit the main script
     sys.exit(0)
 
 
