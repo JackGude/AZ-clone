@@ -147,6 +147,7 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
             black_model_path=BEST_MODEL_PATH,
             time_limit=choose_time_limit(prefix),
             c_puct=SELFPLAY_CPUCT,
+            use_dynamic_cpuct=True,
             use_dirichlet_noise=True,
             dirichlet_alpha=dirichlet_alpha,
             dirichlet_epsilon=dirichlet_epsilon,

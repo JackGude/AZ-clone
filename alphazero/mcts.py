@@ -57,6 +57,7 @@ class MCTS:
         encoder,
         time_limit=5,
         c_puct=1.41,
+        use_dynamic_cpuct: bool = False,
         device="cpu",
         batch_size=64,
         dirichlet_alpha=0.3,
@@ -66,6 +67,7 @@ class MCTS:
         self.encoder = encoder
         self.time_limit = time_limit
         self.c_puct = c_puct
+        self.use_dynamic_cpuct = use_dynamic_cpuct
         self.device = device
         self.batch_size = batch_size
         self.dirichlet_alpha = dirichlet_alpha
@@ -93,6 +95,13 @@ class MCTS:
 
         root.expand(priors)
 
+        final_c_puct = self.c_puct # Default to the fixed value
+        if self.use_dynamic_cpuct:
+            if abs(root_value) < 0.1:
+                final_c_puct = 2.0  # More exploration in drawn positions
+            elif abs(root_value) > 0.5:
+                final_c_puct = 1.0  # More exploitation in decisive positions  
+
         # Main simulation loop - continues until the time limit is reached.
         start_time = time.time()
         while time.time() - start_time < self.time_limit:
@@ -111,7 +120,7 @@ class MCTS:
 
                 # a) Selection: Traverse the tree from the root to a leaf node.
                 while not node.is_leaf():
-                    move, node = node.select(self.c_puct)
+                    move, node = node.select(final_c_puct)
                     board_copy.push(move)
 
                 # b) If the game ends during selection, backup the true result immediately.

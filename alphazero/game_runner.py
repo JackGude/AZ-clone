@@ -20,6 +20,7 @@ class GameConfig:
     black_model_path: str
     time_limit: float
     c_puct: float
+    use_dynamic_cpuct: bool
     use_dirichlet_noise: bool
     dirichlet_alpha: float
     dirichlet_epsilon: float
@@ -105,6 +106,7 @@ def play_game(
         encoder=move_encoder,
         time_limit=config.time_limit,
         c_puct=config.c_puct,
+        use_dynamic_cpuct=config.use_dynamic_cpuct,
         device=device,
         dirichlet_alpha=dirichlet,
         dirichlet_epsilon=config.dirichlet_epsilon,
@@ -114,6 +116,7 @@ def play_game(
         encoder=move_encoder,
         time_limit=config.time_limit,
         c_puct=config.c_puct,
+        use_dynamic_cpuct=config.use_dynamic_cpuct,
         device=device,
         dirichlet_alpha=dirichlet,
         dirichlet_epsilon=config.dirichlet_epsilon,
