@@ -102,77 +102,76 @@ def generate_report_card(game_dir: str, num_workers: int, gen_id: str):
     """
     Analyzes all PGNs in a directory and prints a comprehensive, fair report card.
     """
-    pgn_files = [
-        os.path.join(game_dir, f) for f in os.listdir(game_dir) if f.endswith(".pgn")
-    ]
+    pgn_files = [os.path.join(game_dir, f) for f in os.listdir(game_dir) if f.endswith(".pgn")]
     if not pgn_files:
         print("No .pgn files found in the directory.")
         return
 
-    print(
-        f"Found {len(pgn_files)} games to analyze. Starting analysis with {num_workers} workers..."
-    )
-
+    print(f"Found {len(pgn_files)} games to analyze. Starting analysis with {num_workers} workers...")
+    
     with Pool(processes=num_workers) as pool:
         results = pool.map(analyze_game, pgn_files)
-
-    # --- Aggregate results ---
+        
+    # --- Aggregate results from all workers ---
     report = defaultdict(lambda: defaultdict(float))
     opening_report = defaultdict(lambda: defaultdict(int))
 
     for game_result in results:
         if game_result is None:
             continue
-
+        
         white_stats = game_result["white"]
         black_stats = game_result["black"]
-
-        # Process stats for both players
+        
+        # Process stats for both players from the game
         for stats in [white_stats, black_stats]:
             player_name = "New Model" if "New" in stats["player"] else "Old Model"
-
+            
             report[player_name]["games_played"] += 1
             report[player_name]["total_blunders"] += stats["blunders"]
             report[player_name]["total_acpl"] += stats["acpl"]
 
-            # Check for throws (was winning, but didn't win)
-            is_win = (stats["color"] == "White" and stats["final_result"] == "1-0") or (
-                stats["color"] == "Black" and stats["final_result"] == "0-1"
-            )
+            is_win = (stats["color"] == "White" and stats["final_result"] == "1-0") or \
+                     (stats["color"] == "Black" and stats["final_result"] == "0-1")
 
             if stats["was_winning"] and not is_win:
                 report[player_name]["throws"] += 1
             if stats["was_winning"]:
-                report[player_name]["winning_positions"] += 1
+                 report[player_name]["winning_positions"] += 1
+            
+            if stats['was_losing'] and is_win:
+                report[player_name]['comebacks'] += 1
+            if stats['was_losing']:
+                report[player_name]['losing_positions'] += 1
 
-        # Aggregate Opening Stats (this part can be simpler)
+        # Aggregate stats for the opening played in this game
         opening = white_stats["opening"]
+        white_player_name = "New Model" if "New" in white_stats['player'] else "Old Model"
+        
         if white_stats["final_result"] == "1-0":
-            opening_report[opening][white_stats["player"]] += 1
+            opening_report[opening][white_player_name] += 1
         elif black_stats["final_result"] == "0-1":
-            opening_report[opening][black_stats["player"]] += 1
+            # The player name for black is in black_stats
+            black_player_name = "New Model" if "New" in black_stats['player'] else "Old Model"
+            opening_report[opening][black_player_name] += 1
         else:
             opening_report[opening]["Draws"] += 1
-
-    # --- Print Report Card ---
+            
+    # --- Print Report Card to Console ---
     print("\n--- Chess Metrics Report Card ---")
     for player in ["New Model", "Old Model"]:
         stats = report[player]
         games = stats["games_played"]
         avg_blunders = stats["total_blunders"] / games if games > 0 else 0
         avg_acpl = stats["total_acpl"] / games if games > 0 else 0
-        throw_rate = (
-            (stats["throws"] / stats["winning_positions"]) * 100
-            if stats["winning_positions"] > 0
-            else 0
-        )
+        throw_rate = (stats["throws"] / stats["winning_positions"]) * 100 if stats["winning_positions"] > 0 else 0
+        comeback_rate = (stats["comebacks"] / stats["losing_positions"]) * 100 if stats["losing_positions"] > 0 else 0
 
         print(f"\n=== Player: {player} ({int(games)} games total) ===")
         print(f"  Average Blunders per Game: {avg_blunders:.2f}")
         print(f"  Average Centipawn Loss (ACPL): {avg_acpl:.2f}")
-        print(
-            f"  Position 'Throw' Rate: {throw_rate:.1f}% ({int(stats['throws'])}/{int(stats['winning_positions'])} winning positions)"
-        )
+        print(f"  Position 'Throw' Rate: {throw_rate:.1f}% ({int(stats['throws'])}/{int(stats['winning_positions'])} winning positions)")
+        print(f"  Position 'Comeback' Rate: {comeback_rate:.1f}% ({int(stats['comebacks'])}/{int(stats['losing_positions'])} losing positions)")
 
     # --- Log to W&B ---
     print("\nLogging analysis report to Weights & Biases...")
@@ -185,17 +184,18 @@ def generate_report_card(game_dir: str, num_workers: int, gen_id: str):
             stats = report[player]
             games_played = stats.get('games_played', 0)
             winning_positions = stats.get('winning_positions', 0)
+            losing_positions = stats.get('losing_positions', 0)
             
-            # Use .get(key, 0) to avoid errors if a player had no games/stats
             avg_blunders = stats.get('total_blunders', 0) / games_played if games_played > 0 else 0
             avg_acpl = stats.get('total_acpl', 0) / games_played if games_played > 0 else 0
             throw_rate = (stats.get('throws', 0) / winning_positions) * 100 if winning_positions > 0 else 0
+            comeback_rate = (stats.get('comebacks', 0) / losing_positions) * 100 if losing_positions > 0 else 0
             
-            # Use a prefix to group these metrics in the W&B dashboard
             prefix = "analysis"
             summary_log[f"{prefix}/{player}_ACPL"] = avg_acpl
             summary_log[f"{prefix}/{player}_Avg_Blunders"] = avg_blunders
             summary_log[f"{prefix}/{player}_Throw_Rate"] = throw_rate
+            summary_log[f"{prefix}/{player}_Comeback_Rate"] = comeback_rate
 
         # 2. Create and log the detailed opening performance table
         opening_table = wandb.Table(columns=["Opening", "New Model Wins", "Old Model Wins", "Draws"])
