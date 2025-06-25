@@ -41,13 +41,14 @@ MAX_FILES_IN_BUFFER = 1_000_000  # Max replay buffer size
 
 # MCTS Parameters
 SELFPLAY_CPUCT = 1.41  # PUCT constant for MCTS exploration
+DIRICHLET_MODULO = 5  # Modulo for increasing Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Weight of Dirichlet noise
 DIRICHLET_ALPHA = 0.25  # Shape of Dirichlet noise
 TEMP_THRESHOLD = 30  # Number of moves to use temperature sampling
 
 # Game Termination Parameters
 SELFPLAY_MAX_MOVES = 200  # Cap for game length in self-play
-RESIGN_THRESHOLD = 0.95  # Resign if win probability is below (1 - threshold)
+RESIGN_THRESHOLD = 0.99  # Resign if win probability is below (1 - threshold)
 DRAW_CAP_PENALTY = 0.0  # Reward for hitting the move cap
 
 # -----------------------------------------------------------------------------
@@ -75,11 +76,9 @@ DEFAULT_EVAL_TIME_LIMIT = 2  # Time in seconds per move for evaluation games
 DEFAULT_EVAL_CPUCT = 1.0  # PUCT constant for evaluation MCTS
 
 # Adjudication Parameters
-ADJUDICATION_START_MOVE = 40 # Don't check for draws before this move
-DRAW_ADJUDICATION_THRESHOLD = 0.08  # Adjudicate if abs(eval) is below this value
-DRAW_ADJUDICATION_PATIENCE = 12  # For this many consecutive moves
-WIN_ADJUDICATION_THRESHOLD = 0.90  # Adjudicate if eval is above this value
-WIN_ADJUDICATION_PATIENCE = 6  # For this many consecutive moves
+ADJUDICATION_START_MOVE = 60 # Don't check for draws before this move
+DRAW_ADJUDICATION_THRESHOLD = 0.10  # Adjudicate if abs(eval) is below this value
+DRAW_ADJUDICATION_PATIENCE = 20  # For this many consecutive moves
 
 # -----------------------------------------------------------------------------
 #  Stockfish Analysis Config (stockfish_analysis.py)

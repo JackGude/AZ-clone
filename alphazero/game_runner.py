@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import torch
 import chess
+from chess import pgn
 from typing import List, Tuple, Optional
 import sys
 
@@ -26,8 +27,6 @@ class GameConfig:
     temp_threshold: int
     use_adjudication: bool
     adjudication_start_move: int
-    win_adjudication_threshold: float
-    win_adjudication_patience: int
     draw_adjudication_threshold: float
     draw_adjudication_patience: int
     resign_threshold: float
@@ -40,57 +39,33 @@ def adjudicate_game(
     q_value: float,
     is_white_turn: bool,
     move_count: int,
-    config: GameConfig,  # Passing the whole config is cleaner
-    white_win_streak: int,
-    black_win_streak: int,
+    config: GameConfig,
     draw_streak: int,
-) -> Tuple[Optional[float], int, int, int]:
+) -> Tuple[Optional[float], int]:
     """
-    Helper function to check if a game should be adjudicated.
-    Now includes a "grace period" before any adjudication can occur.
+    Helper function to check if a game should be adjudicated as a draw.
     """
-    # --- 1. Normalize the Q-value ---
-    q_white_perspective = q_value if is_white_turn else -q_value
-
-    # --- 2. Do nothing if we are within the adjudication grace period ---
+    # --- 1. Do nothing if we are within the adjudication grace period ---
     if move_count <= config.adjudication_start_move:
-        # Return all streaks unmodified and no outcome
-        return None, 0, 0, 0
+        return None, 0
 
-    # --- 3. Update all streak counters based on the current evaluation ---
-    # Update win streak
-    if q_white_perspective > config.win_adjudication_threshold:
-        white_win_streak += 1
-    else:
-        white_win_streak = 0
-
-    # Update loss streak
-    if q_white_perspective < -config.win_adjudication_threshold:
-        black_win_streak += 1
-    else:
-        black_win_streak = 0
-
-    # Update draw streak
-    if abs(q_white_perspective) < config.draw_adjudication_threshold:
+    # --- 2. Update draw streak counter ---
+    if abs(q_value) < config.draw_adjudication_threshold:
         draw_streak += 1
     else:
         draw_streak = 0
 
-    # --- 4. Check for an outcome based on the updated streaks ---
+    # --- 3. Check for draw outcome ---
     outcome = None
-    if white_win_streak >= config.win_adjudication_patience:
-        outcome = 1.0  # White win
-    elif black_win_streak >= config.win_adjudication_patience:
-        outcome = -1.0  # Black win
-    elif draw_streak >= config.draw_adjudication_patience:
-        outcome = 0.0  # Draw
+    if draw_streak >= config.draw_adjudication_patience:
+        outcome = 0.0  # Adjudicated Draw
 
-    return outcome, white_win_streak, black_win_streak, draw_streak
+    return outcome, draw_streak
 
 
 def play_game(
-    config: GameConfig, env: Optional[ChessEnv] = None
-) -> Tuple[List[dict], Optional[float], str, int, ChessEnv]:
+    config: GameConfig, env: Optional[ChessEnv] = None, pgn_node: Optional[pgn.GameNode] = None
+) -> Tuple[List[dict], Optional[float], str, int]:
     """
     Play a single game of chess using the provided configuration.
     Accepts an optional ChessEnv object.
@@ -147,7 +122,7 @@ def play_game(
     # Initialize game state
     game_records = []
     move_count = 0
-    white_win_streak, black_win_streak, draw_streak = 0, 0, 0
+    draw_streak = 0
     outcome = None
     outcome_type = "unknown"
 
@@ -166,25 +141,16 @@ def play_game(
 
         # Adjudication (if enabled)
         if config.use_adjudication:
-            adjudicated_outcome, white_win_streak, black_win_streak, draw_streak = (
-                adjudicate_game(
-                    q_value=root.Q,
-                    is_white_turn=is_white_turn,
-                    move_count=move_count,
-                    config=config,
-                    white_win_streak=white_win_streak,
-                    black_win_streak=black_win_streak,
-                    draw_streak=draw_streak,
-                )
+            adjudicated_outcome, draw_streak = adjudicate_game(
+                q_value=root.Q,
+                is_white_turn=is_white_turn,
+                move_count=move_count,
+                config=config,
+                draw_streak=draw_streak,
             )
             if adjudicated_outcome is not None:
                 outcome = adjudicated_outcome
-                if outcome == 1.0:
-                    outcome_type = "white_win_adjudicated"
-                elif outcome == -1.0:
-                    outcome_type = "black_win_adjudicated"
-                else:
-                    outcome_type = "draw_adjudicated"
+                outcome_type = "draw_adjudicated"
                 break
 
         # Resignation Check (FIXED)
@@ -249,6 +215,9 @@ def play_game(
                     flush=True,
                 )
 
+        if pgn_node:
+            pgn_node = pgn_node.add_main_variation(move)
+
         # Make the move
         env.step(move)
         move_count += 1
@@ -279,4 +248,4 @@ def play_game(
             state_tensor = encode_history(record["state_history"])
             final_examples.append((state_tensor.numpy(), record["pi"], z_value))
 
-    return final_examples, outcome, outcome_type, move_count, env
+    return final_examples, outcome, outcome_type, move_count

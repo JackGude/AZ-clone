@@ -31,6 +31,7 @@ from config import (
     NUM_SELFPLAY_WORKERS,
     MAX_FILES_IN_BUFFER,
     SELFPLAY_CPUCT,
+    DIRICHLET_MODULO,
     DIRICHLET_EPSILON,
     DIRICHLET_ALPHA,
     TEMP_THRESHOLD,
@@ -132,8 +133,8 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
         print(f"{prefix} Starting game...", flush=True)
         game_start_time = time.time()
 
-        # Increase the dirichlet noise for 10% of games
-        if game_num % 10 == 0:
+        # Increase the dirichlet noise for 20% of games
+        if game_num % DIRICHLET_MODULO == 0:
             dirichlet_alpha = DIRICHLET_ALPHA * 2
             dirichlet_epsilon = DIRICHLET_EPSILON * 2
         else:
@@ -153,8 +154,6 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
             temp_threshold=TEMP_THRESHOLD,
             use_adjudication=True,  # Adjudication is typically not used for self-play
             adjudication_start_move=SELFPLAY_MAX_MOVES,
-            win_adjudication_threshold=0.99,  # N/A
-            win_adjudication_patience=1,  # N/A
             draw_adjudication_threshold=0.0,  # N/A
             draw_adjudication_patience=1,  # N/A
             resign_threshold=RESIGN_THRESHOLD,
@@ -167,7 +166,7 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
         # Pass the game_num to the setup function for clearer logging
         setup_selfplay_opening(env, game_num)
 
-        game_positions, _, outcome_type, game_length, _ = play_game(config, env)
+        game_positions, _, outcome_type, game_length = play_game(config, env)
 
         if game_positions:
             encoder = MoveEncoder()

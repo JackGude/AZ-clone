@@ -34,8 +34,6 @@ from config import (
     ADJUDICATION_START_MOVE,
     DRAW_ADJUDICATION_THRESHOLD,
     DRAW_ADJUDICATION_PATIENCE,
-    WIN_ADJUDICATION_THRESHOLD,
-    WIN_ADJUDICATION_PATIENCE,
 )
 
 
@@ -97,7 +95,6 @@ def run_eval_worker(
     env = ChessEnv()
     opening_name, opening_moves = openings[game_idx % num_unique_openings]
     env.set_board_from_moves(opening_moves)
-    # print(f"{prefix} Starting with opening: {opening_name}", file=sys.stderr, flush=True)
 
     # --- Create a configuration for an evaluation game ---
     config = GameConfig(
@@ -112,8 +109,6 @@ def run_eval_worker(
         temp_threshold=0,
         use_adjudication=True,
         adjudication_start_move=ADJUDICATION_START_MOVE,
-        win_adjudication_threshold=WIN_ADJUDICATION_THRESHOLD,
-        win_adjudication_patience=WIN_ADJUDICATION_PATIENCE,
         draw_adjudication_threshold=DRAW_ADJUDICATION_THRESHOLD,
         draw_adjudication_patience=DRAW_ADJUDICATION_PATIENCE,
         resign_threshold=1.1,
@@ -124,6 +119,7 @@ def run_eval_worker(
 
     # --- Create a PGN file for the game ---
     game = pgn.Game()
+    game.setup(env.board)
     game.headers["Event"] = f"Evaluation Match Gen {gen_id}"
     game.headers["Site"] = "Local"
     game.headers["Date"] = str(time.strftime("%Y.%m.%d"))
@@ -132,14 +128,18 @@ def run_eval_worker(
     game.headers["Black"] = "Old Model" if is_new_white else "New Model"
     game.headers["Opening"] = opening_name
 
-    # --- Play the game ---
-    _, numerical_outcome, outcome_type, move_count, final_env = play_game(
-        config, env=env
-    )
+    # --- Play the game, passing the PGN node to be updated live ---
+    _, numerical_outcome, outcome_type, move_count = play_game(config, env=env, pgn_node=game.end())
 
-    # --- Save the game as a PGN file for analysis ---
-    game.add_line(final_env.board.move_stack)  # Add all moves from the game
-    game.headers["Result"] = final_env.board.result(claim_draw=True)
+    # --- Save the now-complete PGN file ---
+    if numerical_outcome == 1.0:
+        game.headers["Result"] = "1-0"
+    elif numerical_outcome == -1.0:
+        game.headers["Result"] = "0-1"
+    else:
+        game.headers["Result"] = "1/2-1/2"
+
+
     os.makedirs(os.path.join(EVAL_GAMES_DIR, gen_id), exist_ok=True)
     pgn_path = os.path.join(
         EVAL_GAMES_DIR, gen_id, f"game_{game_idx + 1}_{outcome_type}.pgn"
