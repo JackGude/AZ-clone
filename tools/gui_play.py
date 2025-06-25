@@ -13,7 +13,10 @@ from alphazero.mcts import MCTS
 from alphazero.move_encoder import MoveEncoder
 from alphazero.utils import ensure_project_root
 from config import (
+    # GUI Play Config
     BEST_MODEL_PATH,
+    # MCTS Config
+    DEFAULT_EVAL_CPUCT,
 )
 
 warnings.filterwarnings("ignore", message=".*pygame.*avx2.*")
@@ -69,11 +72,11 @@ class ChessGUI:
         self.encoder = encoder
         self.mcts = MCTS(
             net,
-            encoder,
+            self.encoder,
             time_limit=time_limit,
-            c_puct=1.41,
+            c_puct=DEFAULT_EVAL_CPUCT,  # Use the same c_puct as evaluation
             device=device,
-            dirichlet_alpha=0,
+            dirichlet_alpha=0,  # No noise for deterministic play
         )
         self.human_color = chess.WHITE
 
@@ -98,8 +101,7 @@ class ChessGUI:
 
     def reset_game(self):
         print("--- NEW GAME ---")
-        self.env = ChessEnv(history_size=8)
-        self.env.reset()
+        self.env = ChessEnv()
         self.selected_square = None
         self.valid_moves = []
         self.game_over = False
@@ -305,10 +307,18 @@ class ChessGUI:
     def _run_ai_search(self):
         """The function that will be run in a separate thread."""
         root, _ = self.mcts.run(self.env)
+
+        # In a real game, always play the best move found
         counts = torch.zeros(self.encoder.mapping_size, dtype=torch.float32)
         for m, child in root.children.items():
             counts[self.encoder.encode(m)] = child.N
-        best_move = self.encoder.decode(int(counts.argmax().item()))
+
+        if counts.sum() == 0:
+            # Fallback if no moves were explored (should be rare)
+            best_move = list(self.env.board.legal_moves)[0]
+        else:
+            best_move = self.encoder.decode(int(counts.argmax().item()))
+
         self.ai_move_result = (best_move, root.Q)
 
     def run(self, human_color):
@@ -396,7 +406,7 @@ if __name__ == "__main__":
         "--time-limit",
         type=int,
         default=2,
-        help="Time in seconds for the AI to think per move.",
+        help="Time in seconds for the AI to think per move. Default is 2 seconds.",
     )
     parser.add_argument(
         "--color",
