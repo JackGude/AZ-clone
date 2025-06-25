@@ -102,6 +102,7 @@ def run_eval_worker(
         black_model_path=black_path,
         time_limit=time_limit,
         c_puct=DEFAULT_EVAL_CPUCT,
+        use_dynamic_cpuct=False,
         use_dirichlet_noise=False,
         dirichlet_alpha=0,
         dirichlet_epsilon=0,

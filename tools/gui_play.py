@@ -75,6 +75,7 @@ class ChessGUI:
             self.encoder,
             time_limit=time_limit,
             c_puct=DEFAULT_EVAL_CPUCT,  # Use the same c_puct as evaluation
+            use_dynamic_cpuct=False,
             device=device,
             dirichlet_alpha=0,  # No noise for deterministic play
         )

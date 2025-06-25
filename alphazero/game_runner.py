@@ -38,7 +38,6 @@ class GameConfig:
 
 def adjudicate_game(
     q_value: float,
-    is_white_turn: bool,
     move_count: int,
     config: GameConfig,
     draw_streak: int,
@@ -146,7 +145,6 @@ def play_game(
         if config.use_adjudication:
             adjudicated_outcome, draw_streak = adjudicate_game(
                 q_value=root.Q,
-                is_white_turn=is_white_turn,
                 move_count=move_count,
                 config=config,
                 draw_streak=draw_streak,
