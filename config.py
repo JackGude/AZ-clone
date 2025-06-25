@@ -43,7 +43,7 @@ MAX_FILES_IN_BUFFER = 1_000_000  # Max replay buffer size
 SELFPLAY_CPUCT = 1.41  # PUCT constant for MCTS exploration
 DIRICHLET_MODULO = 5  # Modulo for increasing Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Weight of Dirichlet noise
-DIRICHLET_ALPHA = 0.25  # Shape of Dirichlet noise
+DIRICHLET_ALPHA = 0.3  # Shape of Dirichlet noise
 TEMP_THRESHOLD = 30  # Number of moves to use temperature sampling
 
 # Game Termination Parameters
