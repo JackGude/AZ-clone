@@ -1,31 +1,31 @@
 # automate.py
 
+import argparse
+import json
 import os
-import sys
-import time
+import shutil
 import signal
 import subprocess
-import argparse
-import shutil
+import sys
+import time
+
+from alphazero.utils import ensure_project_root, format_time
+from config import PAST_CHAMPS_DIR
 from config import (
-    # Project and File Paths
-    MODEL_DIR,
-    LOGS_DIR,
+    AUTOMATE_DEFAULT_NUM_SELFPLAY_GAMES,
+    AUTOMATE_EVAL_TIME_LIMIT,
+    AUTOMATE_NUM_EVAL_GAMES,
+    AUTOMATE_WARMUP_GENS,
+    AUTOMATE_WIN_THRESHOLD,
     BEST_MODEL_PATH,
     CANDIDATE_MODEL_PATH,
-    SELFPLAY_SCRIPT,
-    TRAIN_SCRIPT,
     EVALUATE_SCRIPT,
+    LOGS_DIR,
+    MODEL_DIR,
+    SELFPLAY_SCRIPT,
     STOP_FILE,
-    # Automation Pipeline Config
-    AUTOMATE_NUM_SELFPLAY_GAMES,
-    AUTOMATE_NUM_EVAL_GAMES,
-    AUTOMATE_WIN_THRESHOLD,
-    AUTOMATE_WARMUP_GENS,
-    AUTOMATE_EVAL_TIME_LIMIT,
+    TRAIN_SCRIPT,
 )
-import json
-from alphazero.utils import format_time, ensure_project_root
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ def run_subprocess(cmd, log_path):
         print(error_message, file=sys.stderr)
 
 
-def run_selfplay(generation_id_str):
+def run_selfplay(generation_id_str, num_selfplay_games):
     """Runs the self-play script to generate new training data."""
     print(f"\n=== [AUTO] {generation_id_str} --> Running Self-Play ===")
     log_path = os.path.join(LOGS_DIR, f"{generation_id_str}/selfplay.log")
@@ -100,7 +100,7 @@ def run_selfplay(generation_id_str):
         sys.executable,
         SELFPLAY_SCRIPT,
         "--num-games",
-        str(AUTOMATE_NUM_SELFPLAY_GAMES),
+        str(num_selfplay_games),
         "--gen-id",
         generation_id_str,
     ]
@@ -172,7 +172,7 @@ def run_evaluation(generation_id_str, is_warmup=False):
 
         # Clean up the result file
         os.remove(result_path)
-        promote_candidate(win_rate)
+        promote_candidate(win_rate, generation_id_str)
 
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         raise RuntimeError(f"Failed to parse evaluation result file: {e}")
@@ -180,14 +180,24 @@ def run_evaluation(generation_id_str, is_warmup=False):
         raise RuntimeError("Evaluation completed but result file was not created")
 
 
-def promote_candidate(win_rate):
+def promote_candidate(win_rate, generation_id_str=None):
     """
     If the candidate's win rate is above the threshold, it replaces 'best.pth'.
+    The old best model is saved in the past_champs directory.
     """
     if win_rate >= AUTOMATE_WIN_THRESHOLD:
         print(
             f"\n→ Candidate met win threshold ({win_rate:.2f} >= {AUTOMATE_WIN_THRESHOLD}). Promoting to 'best.pth'."
         )
+        
+        # Save the old champion if it exists
+        if os.path.exists(BEST_MODEL_PATH) and generation_id_str is not None:
+            os.makedirs(PAST_CHAMPS_DIR, exist_ok=True)
+            past_champ_filename = f"retired_{generation_id_str}.pth"
+            past_champ_path = os.path.join(PAST_CHAMPS_DIR, past_champ_filename)
+            shutil.copy2(BEST_MODEL_PATH, past_champ_path)
+            print(f"→ Saved previous champion to {past_champ_path}")
+            
         # Use rename for an atomic operation, replacing the old best model.
         shutil.move(CANDIDATE_MODEL_PATH, BEST_MODEL_PATH)
         return True
@@ -247,13 +257,13 @@ def main(args):
     print(f"\n{'#' * 20} Starting AlphaZero Training Loop {'#' * 20}")
     print(f"Starting from generation {generation}")
     print("Configuration:")
-    print(f"  - Self-play games per generation: {AUTOMATE_NUM_SELFPLAY_GAMES}")
+    print(f"  - Self-play games per generation: {args.num_selfplay_games}")
     print(f"  - Evaluation games: {AUTOMATE_NUM_EVAL_GAMES}")
     print(f"  - Win threshold: {AUTOMATE_WIN_THRESHOLD}")
     print(f"  - Warm-up generations: {AUTOMATE_WARMUP_GENS}")
     print(f"{'#' * 80}\n")
 
-    while True:
+    while generation <= args.num_generations:
         is_warmup = generation <= AUTOMATE_WARMUP_GENS
         generation_id_str = f"gen-{generation:03d}"
         print(f"\n{'#' * 20} {generation_id_str} {'#' * 20}")
@@ -262,7 +272,7 @@ def main(args):
         if current_step == "selfplay":
             print(f"\n>>> Step 1: Running Self-Play for {generation_id_str}")
             selfplay_start_time = time.time()
-            run_selfplay(generation_id_str)
+            run_selfplay(generation_id_str, args.num_selfplay_games)
             print(
                 f"\n<<< Self-Play finished in {format_time(time.time() - selfplay_start_time)}"
             )
@@ -322,6 +332,12 @@ if __name__ == "__main__":
         default="selfplay",
         help="The step to start the loop from. Defaults to selfplay.",
         choices=["selfplay", "training", "evaluation"],
+    )
+    parser.add_argument(
+        "--num-selfplay-games",
+        type=int,
+        default=2000,
+        help=f"The number of self-play games to generate per generation. Defaults to {AUTOMATE_DEFAULT_NUM_SELFPLAY_GAMES}.",
     )
     args = parser.parse_args()
     main(args)

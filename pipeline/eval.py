@@ -1,40 +1,35 @@
 # eval.py
 
 import argparse
-import time
-import json
-import wandb
-import sys
-import multiprocessing
 from itertools import repeat
-from chess import pgn
-from chess.pgn import StringExporter
+import json
+import multiprocessing
 import os
 import random
-import pandas as pd
+import sys
+import time
 
-# --- Local Project Imports ---
-from alphazero.game_runner import GameConfig, play_game
 from alphazero.env import ChessEnv
-from alphazero.utils import format_time, ensure_project_root
-
-# --- Config Imports ---
+from alphazero.game_runner import GameConfig, play_game
+from alphazero.utils import ensure_project_root, format_time
+from chess import pgn
+from chess.pgn import StringExporter
 from config import (
-    # Project and File Paths
-    PROJECT_NAME,
+    ADJUDICATION_START_MOVE,
     BEST_MODEL_PATH,
     CANDIDATE_MODEL_PATH,
-    EVAL_GAMES_DIR,
-    OPENINGS_EVAL_PATH,
-    # Evaluation Config
-    NUM_EVAL_WORKERS,
-    DEFAULT_NUM_EVAL_GAMES,
-    DEFAULT_EVAL_TIME_LIMIT,
     DEFAULT_EVAL_CPUCT,
-    ADJUDICATION_START_MOVE,
-    DRAW_ADJUDICATION_THRESHOLD,
+    DEFAULT_EVAL_TIME_LIMIT,
+    DEFAULT_NUM_EVAL_GAMES,
     DRAW_ADJUDICATION_PATIENCE,
+    DRAW_ADJUDICATION_THRESHOLD,
+    EVAL_GAMES_DIR,
+    NUM_EVAL_WORKERS,
+    OPENINGS_EVAL_PATH,
+    PROJECT_NAME,
 )
+import pandas as pd
+import wandb
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -42,11 +37,8 @@ from config import (
 # ─────────────────────────────────────────────────────────────────────────────
 try:
     EVALUATION_OPENINGS = pd.read_csv(OPENINGS_EVAL_PATH)
-    # print(f"Successfully loaded {len(SELFPLAY_OPENINGS)} openings for self-play.")
 except FileNotFoundError:
-    print(
-        f"Warning: {OPENINGS_EVAL_PATH} not found."
-    )
+    print(f"Warning: {OPENINGS_EVAL_PATH} not found.", flush=True)
     EVALUATION_OPENINGS = None
 
 
@@ -130,16 +122,15 @@ def run_eval_worker(
     game.headers["Opening"] = opening_name
 
     # --- Play the game, passing the PGN node to be updated live ---
-    _, numerical_outcome, outcome_type, move_count = play_game(config, env=env, pgn_node=game.end())
+    _, outcome_type, move_count = play_game(config, env=env, pgn_node=game.end())
 
     # --- Save the now-complete PGN file ---
-    if numerical_outcome == 1.0:
-        game.headers["Result"] = "1-0"
-    elif numerical_outcome == -1.0:
-        game.headers["Result"] = "0-1"
-    else:
+    if outcome_type in ["checkmate_white", "resign_black"]:
+        game.headers["Result"] = "1-0"  # White wins by checkmate or black resigns
+    elif outcome_type in ["checkmate_black", "resign_white"]:
+        game.headers["Result"] = "0-1"  # Black wins by checkmate or white resigns
+    else:  # draw_cap, draw_adjudicated, draw_game
         game.headers["Result"] = "1/2-1/2"
-
 
     os.makedirs(os.path.join(EVAL_GAMES_DIR, gen_id), exist_ok=True)
     pgn_path = os.path.join(
@@ -154,7 +145,9 @@ def run_eval_worker(
             f.write(pgn_string)
     except Exception as e:
         print(
-            f"{prefix} Failed to write PGN file {pgn_path}. Error: {e}", file=sys.stderr
+            f"{prefix} Failed to write PGN file {pgn_path}. Error: {e}",
+            file=sys.stderr,
+            flush=True,
         )
 
     print(
@@ -163,10 +156,11 @@ def run_eval_worker(
     )
 
     # --- Convert outcome to a score from the NEW model's perspective. ---
-    if is_new_white:
-        return numerical_outcome
-    else:
-        return -numerical_outcome
+    if outcome_type in ["checkmate_white", "resign_black"]:  # White wins
+        return 1.0 if is_new_white else -1.0
+    elif outcome_type in ["checkmate_black", "resign_white"]:  # Black wins
+        return -1.0 if is_new_white else 1.0
+    return 0.0  # draw_cap, draw_adjudicated, draw_game
 
 
 def log_evaluation_to_wandb(
@@ -179,7 +173,7 @@ def log_evaluation_to_wandb(
     if not (wandb.run and not wandb.run.disabled):
         return  # Do nothing if wandb is disabled
 
-    print("Logging results to Weights & Biases...")
+    print("Logging results to Weights & Biases...", flush=True)
 
     # --- Create and log a detailed table of each game's result ---
     eval_table = wandb.Table(
@@ -207,7 +201,7 @@ def log_evaluation_to_wandb(
     }
 
     wandb.log(eval_summary)
-    print("Finished logging to Weights & Biases.")
+    print("Finished logging to Weights & Biases.", flush=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,6 +225,7 @@ def evaluate(
         print(
             "Error: Evaluation openings are not loaded. Cannot start evaluation.",
             file=sys.stderr,
+            flush=True,
         )
         return
     else:
@@ -242,6 +237,7 @@ def evaluate(
         print(
             "Error: Number of games must be even. Rounding up to the nearest even number.",
             file=sys.stderr,
+            flush=True,
         )
         num_games += 1
 
@@ -271,7 +267,9 @@ def evaluate(
         results = pool.starmap(run_eval_worker, tasks)
 
     print(
-        f"\nAll evaluation games finished in {format_time(time.time() - total_start_time)}. Processing results..."
+        f"\nAll evaluation games finished in {format_time(time.time() - total_start_time)}. Processing results...",
+        file=sys.stderr,
+        flush=True,
     )
 
     wins = sum(1 for r in results if r == 1.0)

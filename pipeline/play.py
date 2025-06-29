@@ -1,50 +1,51 @@
 # play.py
 
+import argparse
+import multiprocessing
 import os
 import random
+import sys
 import time
+from typing import Tuple
 import uuid
-import argparse
-import wandb
-import multiprocessing
-from typing import List, Tuple
-import torch
+
+from alphazero.env import ChessEnv
+from alphazero.game_runner import GameConfig, play_game
+from alphazero.move_encoder import MoveEncoder
+from alphazero.utils import ensure_project_root, format_time, load_or_initialize_model
+from config import (
+    BEST_MODEL_PATH,
+    DEFAULT_NUM_SELFPLAY_GAMES,
+    DIRICHLET_ALPHA,
+    DIRICHLET_EPSILON,
+    DIRICHLET_MODULO,
+    DRAW_CACHE_DIR,
+    MAX_DECISIVE_GAMES,
+    MAX_DRAW_GAMES,
+    MODEL_DIR,
+    NUM_SELFPLAY_WORKERS,
+    OPENINGS_SELFPLAY_PATH,
+    PAST_CHAMPS_DIR,
+    PROJECT_NAME,
+    RESIGN_THRESHOLD,
+    SELFPLAY_CPUCT,
+    SELFPLAY_MAX_MOVES,
+    SPARRING_PARTNER_PROB,
+    TEMP_THRESHOLD,
+    WIN_CACHE_DIR,
+)
 import numpy as np
 import pandas as pd
-
-# --- Local Project Imports ---
-from alphazero.game_runner import GameConfig, play_game
-from alphazero.utils import format_time, ensure_project_root
-from alphazero.env import ChessEnv
-from alphazero.move_encoder import MoveEncoder
-
-# --- Config Imports ---
-from config import (
-    # Project and File Paths
-    PROJECT_NAME,
-    TENSOR_CACHE_DIR,
-    MODEL_DIR,
-    BEST_MODEL_PATH,
-    OPENINGS_SELFPLAY_PATH,
-    # Self-Play Config
-    DEFAULT_NUM_SELFPLAY_GAMES,
-    NUM_SELFPLAY_WORKERS,
-    MAX_FILES_IN_BUFFER,
-    SELFPLAY_CPUCT,
-    DIRICHLET_MODULO,
-    DIRICHLET_EPSILON,
-    DIRICHLET_ALPHA,
-    TEMP_THRESHOLD,
-    SELFPLAY_MAX_MOVES,
-    RESIGN_THRESHOLD,
-)
+import torch
+import wandb
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Ensure necessary directories exist, paths come from config.py
-os.makedirs(TENSOR_CACHE_DIR, exist_ok=True)
+os.makedirs(WIN_CACHE_DIR, exist_ok=True)
+os.makedirs(DRAW_CACHE_DIR, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 try:
@@ -88,30 +89,28 @@ def manage_replay_buffer():
     Ensures the number of files in the replay buffer directory does not exceed a maximum.
     Deletes the oldest files if the limit is surpassed.
     """
-    try:
-        files = [
-            os.path.join(TENSOR_CACHE_DIR, f)
-            for f in os.listdir(TENSOR_CACHE_DIR)
-            if f.endswith(".pt")
-        ]
-        if len(files) > MAX_FILES_IN_BUFFER:
-            # Sort files by modification time (oldest first)
-            files.sort(key=os.path.getmtime)
+    caches = [(WIN_CACHE_DIR, MAX_DECISIVE_GAMES), (DRAW_CACHE_DIR, MAX_DRAW_GAMES)]
 
-            num_to_delete = len(files) - MAX_FILES_IN_BUFFER
-            for i in range(num_to_delete):
-                os.remove(files[i])
+    for cache_dir, max_files in caches:
+        try:
+            files = [
+                os.path.join(cache_dir, f)
+                for f in os.listdir(cache_dir)
+                if f.endswith(".pt")
+            ]
+            if len(files) > max_files:
+                # Sort files by modification time (oldest first)
+                files.sort(key=os.path.getmtime)
 
+                num_to_delete = len(files) - max_files
+                for i in range(num_to_delete):
+                    os.remove(files[i])
+
+        except Exception as e:
             print(
-                f"Replay buffer exceeded {MAX_FILES_IN_BUFFER} files. Deleted {num_to_delete} oldest files.",
+                f"Warning: Could not manage replay buffer at {cache_dir}. Error: {e}",
                 flush=True,
             )
-
-    except Exception as e:
-        print(
-            f"Warning: Could not manage replay buffer. Error: {e}",
-            flush=True,
-        )
 
 
 def choose_time_limit(prefix: str):
@@ -124,27 +123,44 @@ def choose_time_limit(prefix: str):
     return time_limit
 
 
-def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
+def run_selfplay_worker(game_num: int) -> Tuple[str, int, float]:
     """
-    This is the target function for each worker process. It plays one game.
+    This is the target function for each worker process. It plays one game,
+    saves the training data (including legality masks), and returns summary stats.
+    
+    With probability SPARRING_PARTNER_PROB, the black player will be a random past champion
+    instead of the current best model, to provide more diverse training.
     """
+    prefix = f"[Worker {game_num + 1}]"
+
     try:
-        prefix = f"[Worker {game_num + 1}]"
-        print(f"{prefix} Starting game...", flush=True)
+        # print(f"{prefix} Starting game...", flush=True)
         game_start_time = time.time()
 
-        # Increase the dirichlet noise for 20% of games
+        # Increase the dirichlet noise for a percentage of games
         if game_num % DIRICHLET_MODULO == 0:
             dirichlet_alpha = DIRICHLET_ALPHA * 2
-            dirichlet_epsilon = DIRICHLET_EPSILON * 2
+            dirichlet_epsilon = min(0.5, DIRICHLET_EPSILON * 2)
         else:
             dirichlet_alpha = DIRICHLET_ALPHA
             dirichlet_epsilon = DIRICHLET_EPSILON
 
+        # Determine model paths - sometimes use a past champion as sparring partner
+        white_model_path = BEST_MODEL_PATH
+        black_model_path = BEST_MODEL_PATH
+        
+        # With probability SPARRING_PARTNER_PROB, choose a random past champion as the opponent
+        if random.random() < SPARRING_PARTNER_PROB and os.path.exists(PAST_CHAMPS_DIR):
+            past_champs = [f for f in os.listdir(PAST_CHAMPS_DIR) if f.endswith('.pth')]
+            if past_champs:
+                chosen_champ = random.choice(past_champs)
+                black_model_path = os.path.join(PAST_CHAMPS_DIR, chosen_champ)
+                print(f"{prefix} Using past champion as sparring partner: {chosen_champ}", flush=True)
+
         # Create a configuration for a self-play game
         config = GameConfig(
-            white_model_path=BEST_MODEL_PATH,
-            black_model_path=BEST_MODEL_PATH,
+            white_model_path=white_model_path,
+            black_model_path=black_model_path,
             time_limit=choose_time_limit(prefix),
             c_puct=SELFPLAY_CPUCT,
             use_dynamic_cpuct=True,
@@ -153,10 +169,10 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
             dirichlet_epsilon=dirichlet_epsilon,
             use_temperature_sampling=True,
             temp_threshold=TEMP_THRESHOLD,
-            use_adjudication=True,  # Adjudication is typically not used for self-play
-            adjudication_start_move=SELFPLAY_MAX_MOVES,
-            draw_adjudication_threshold=0.0,  # N/A
-            draw_adjudication_patience=1,  # N/A
+            use_adjudication=False,
+            adjudication_start_move=0,
+            draw_adjudication_threshold=0.0,
+            draw_adjudication_patience=1,
             resign_threshold=RESIGN_THRESHOLD,
             selfplay_max_moves=SELFPLAY_MAX_MOVES,
             verbose=False,
@@ -164,45 +180,90 @@ def run_selfplay_worker(game_num: int) -> Tuple[List[dict], str, int, float]:
         )
 
         env = ChessEnv()
-        # Pass the game_num to the setup function for clearer logging
         setup_selfplay_opening(env, game_num)
 
-        game_positions, _, outcome_type, game_length = play_game(config, env)
+        # --- Play the Game ---
+        # The game_positions now contains dictionaries with the legality_mask
+        game_positions, outcome_type, game_length = play_game(
+            config, env
+        )
 
+        # --- Process and Save Training Tensors ---
         if game_positions:
             encoder = MoveEncoder()
-            for state_np, pi_np, z_value in game_positions:
-                # Original
-                state_tensor = torch.from_numpy(state_np.copy()).float()
-                pi_tensor = torch.from_numpy(pi_np.copy()).float()
-                z_tensor = torch.tensor([z_value], dtype=torch.float32)
-                torch.save(
-                    (state_tensor, pi_tensor, z_tensor),
-                    f"{TENSOR_CACHE_DIR}/data_{uuid.uuid4()}.pt",
-                )
+            cache_dir = DRAW_CACHE_DIR if "draw" in outcome_type else WIN_CACHE_DIR
+            os.makedirs(cache_dir, exist_ok=True)
 
-                # Augmented (Flipped)
+            # Initialize lists to store all positions from this game
+            game_chunk = []
+            flipped_game_chunk = []
+
+            # Process all positions first
+            for pos_data in game_positions:
+                # Unpack the dictionary from game_runner
+                state_np = pos_data["state_history"]
+                pi_np = pos_data["pi"]
+                legality_np = pos_data["legality_mask"]
+                z_value = pos_data["z_value"]
+
+                # --- Original Data Point ---
+                state_tensor = torch.from_numpy(np.array(state_np)).float()
+                pi_tensor = torch.from_numpy(pi_np).float()
+                z_tensor = torch.tensor([z_value], dtype=torch.float32)
+                legality_tensor = torch.from_numpy(legality_np).float()
+
+                # Add to game chunk
+                game_chunk.append((state_tensor, pi_tensor, z_tensor, legality_tensor))
+
+                # --- Create Augmented (Flipped) Data Point ---
                 flipped_state_np = np.ascontiguousarray(np.flip(state_np, axis=2))
+
                 original_pi_torch = torch.from_numpy(pi_np)
                 flipped_pi_torch = torch.zeros_like(original_pi_torch)
                 for i, prob in enumerate(original_pi_torch):
                     if prob > 0:
                         flipped_idx = encoder.flip_map[i]
                         flipped_pi_torch[flipped_idx] = prob
+
+                # Flip the legality mask as well
+                flipped_legality_np = np.zeros_like(legality_np)
+                for i, is_legal in enumerate(legality_np):
+                    if is_legal > 0:
+                        flipped_idx = encoder.flip_map[i]
+                        flipped_legality_np[flipped_idx] = 1.0
+
                 flipped_state_tensor = torch.from_numpy(flipped_state_np).float()
-                torch.save(
-                    (flipped_state_tensor, flipped_pi_torch, z_tensor),
-                    f"{TENSOR_CACHE_DIR}/data_{uuid.uuid4()}.pt",
+                flipped_legality_tensor = torch.from_numpy(flipped_legality_np).float()
+
+                # Add to flipped game chunk
+                flipped_game_chunk.append(
+                    (
+                        flipped_state_tensor,
+                        flipped_pi_torch,
+                        z_tensor,
+                        flipped_legality_tensor,
+                    )
                 )
+
+            # Save the complete game as a single chunk
+            if game_chunk:
+                # Save original game
+                torch.save(game_chunk, f"{cache_dir}/chunk_{uuid.uuid4()}.pt")
+                # Save flipped version
+                torch.save(flipped_game_chunk, f"{cache_dir}/chunk_{uuid.uuid4()}.pt")
 
         print(
             f"{prefix} Game finished. Outcome: {outcome_type}, Moves: {game_length}, Time: {format_time(time.time() - game_start_time)}",
             flush=True,
         )
         return outcome_type, game_length, config.time_limit
+
     except Exception as e:
-        print(f"{prefix} Error: {e}", flush=True)
-        return None, None, None
+        print(f"{prefix} CRITICAL WORKER ERROR: {e}", file=sys.stderr, flush=True)
+        import traceback
+
+        traceback.print_exc()
+        return "error", 0, 0
 
 
 def log_selfplay_to_wandb(results, num_total_games):
@@ -253,6 +314,10 @@ def main(args):
         job_type="self-play",
         mode="disabled" if args.no_wandb else "online",
     )
+
+    # Initialize a fresh model if necessary
+    if not os.path.exists(BEST_MODEL_PATH):
+        load_or_initialize_model(BEST_MODEL_PATH, verbose=True)
 
     start_time = time.time()
 

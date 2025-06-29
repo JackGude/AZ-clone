@@ -9,11 +9,14 @@ PROJECT_NAME = "alphazero-chess"
 NUM_WORKERS = 4
 
 TENSOR_CACHE_DIR = "replay_cache"
+WIN_CACHE_DIR = f"{TENSOR_CACHE_DIR}/WIN_LOSS_CACHE"
+DRAW_CACHE_DIR = f"{TENSOR_CACHE_DIR}/DRAW_CACHE"
 MODEL_DIR = "models"
 EVAL_GAMES_DIR = "eval_games"
 LOGS_DIR = "logs"
 BEST_MODEL_PATH = os.path.join(MODEL_DIR, "best.pth")
 CANDIDATE_MODEL_PATH = os.path.join(MODEL_DIR, "candidate.pth")
+PAST_CHAMPS_DIR = os.path.join(MODEL_DIR, "past_champs")
 
 OPENINGS_SELFPLAY_PATH = "openings/selfplay_openings.csv"
 OPENINGS_EVAL_PATH = "openings/evaluation_openings.csv"
@@ -26,7 +29,7 @@ STOP_FILE = "stop.txt"  # If this file exists, the automation will stop after th
 # -----------------------------------------------------------------------------
 #  Automation Pipeline Config (automate.py)
 # -----------------------------------------------------------------------------
-AUTOMATE_NUM_SELFPLAY_GAMES = 600  # Number of self-play games to generate per generation
+AUTOMATE_DEFAULT_NUM_SELFPLAY_GAMES = 2000  # Number of self-play games to generate per generation
 AUTOMATE_NUM_EVAL_GAMES = 48  # Number of games to play to compare models
 AUTOMATE_EVAL_TIME_LIMIT = 10  # Time in seconds per move for evaluation games
 AUTOMATE_WIN_THRESHOLD = 0.52  # Win rate needed for a candidate to be promoted
@@ -37,18 +40,20 @@ AUTOMATE_WARMUP_GENS = 15  # Number of initial generations to run without evalua
 # -----------------------------------------------------------------------------
 NUM_SELFPLAY_WORKERS = NUM_WORKERS  # Number of workers to use for self-play
 DEFAULT_NUM_SELFPLAY_GAMES = 4
-MAX_FILES_IN_BUFFER = 1_000_000  # Max replay buffer size
+MAX_DRAW_GAMES = AUTOMATE_DEFAULT_NUM_SELFPLAY_GAMES  # Max draw games to store
+MAX_DECISIVE_GAMES = MAX_DRAW_GAMES * 3  # Max decisive games to store
+SPARRING_PARTNER_PROB = 0.33
 
 # MCTS Parameters
 SELFPLAY_CPUCT = 1.41  # PUCT constant for MCTS exploration
 DIRICHLET_MODULO = 5  # Modulo for increasing Dirichlet noise
 DIRICHLET_EPSILON = 0.25  # Weight of Dirichlet noise
 DIRICHLET_ALPHA = 0.3  # Shape of Dirichlet noise
-TEMP_THRESHOLD = 30  # Number of moves to use temperature sampling
+TEMP_THRESHOLD = 40  # Number of moves to use temperature sampling
 
 # Game Termination Parameters
 SELFPLAY_MAX_MOVES = 200  # Cap for game length in self-play
-RESIGN_THRESHOLD = 0.99  # Resign if win probability is below (1 - threshold)
+RESIGN_THRESHOLD = 1.01  # Resign if win probability is below (1 - threshold)
 DRAW_CAP_PENALTY = 0.0  # Reward for hitting the move cap
 
 # -----------------------------------------------------------------------------
@@ -62,8 +67,8 @@ LEARNING_RATE = 6.181e-5
 WEIGHT_DECAY = 4.731e-5
 
 # Training Process Parameters
-TRAIN_WINDOW_SIZE = 400_000  # Number of positions to sample for training
-BATCH_SIZE = 1536
+TRAIN_WINDOW_SIZE = MAX_DECISIVE_GAMES + MAX_DRAW_GAMES  # Number of positions to sample for training
+BATCH_SIZE = 768
 MAX_EPOCHS = 20
 PATIENCE = 3  # Early stopping patience
 

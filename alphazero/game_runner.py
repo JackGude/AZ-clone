@@ -1,15 +1,16 @@
 from dataclasses import dataclass
-import torch
+import sys
+from typing import List, Optional, Tuple
+
 import chess
 from chess import pgn
-from typing import List, Tuple, Optional
-import sys
+import torch
 
 from .env import ChessEnv
 from .mcts import MCTS
-from .model import AlphaZeroNet
-from .state_encoder import encode_history
 from .move_encoder import MoveEncoder
+from .state_encoder import encode_history
+from .utils import load_or_initialize_model
 
 
 @dataclass
@@ -64,8 +65,10 @@ def adjudicate_game(
 
 
 def play_game(
-    config: GameConfig, env: Optional[ChessEnv] = None, pgn_node: Optional[pgn.GameNode] = None
-) -> Tuple[List[dict], Optional[float], str, int]:
+    config: GameConfig,
+    env: Optional[ChessEnv] = None,
+    pgn_node: Optional[pgn.GameNode] = None,
+) -> Tuple[List[dict], str, int]:
     """
     Play a single game of chess using the provided configuration.
     Accepts an optional ChessEnv object.
@@ -75,31 +78,25 @@ def play_game(
         env = ChessEnv()
     move_encoder = MoveEncoder()
 
-    # Load models
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    white_model = AlphaZeroNet().to(device)
-    white_model.load_state_dict(
-        torch.load(config.white_model_path, map_location=device, weights_only=True)
-    )
-    if config.verbose:
-        print(f"{config.log_prefix} Loaded white model from {config.white_model_path}")
-    white_model.eval()
+    # Load white model
+    white_model, _ = load_or_initialize_model(config.white_model_path)
 
+    if config.verbose:
+        print(f"{config.log_prefix} White model ready")
+
+    # Load or reuse black model
     if config.white_model_path == config.black_model_path:
         black_model = white_model
     else:
-        black_model = AlphaZeroNet().to(device)
-        black_model.load_state_dict(
-            torch.load(config.black_model_path, map_location=device, weights_only=True)
-        )
+        black_model, _ = load_or_initialize_model(config.black_model_path)
         if config.verbose:
-            print(
-                f"{config.log_prefix} Loaded black model from {config.black_model_path}"
-            )
-        black_model.eval()
+            print(f"{config.log_prefix} Black model ready")
 
     # Create MCTS instances
     dirichlet = config.dirichlet_alpha if config.use_dirichlet_noise else 0
+    # Get device from the model
+    device = next(white_model.parameters()).device
+
     white_mcts = MCTS(
         net=white_model,
         encoder=move_encoder,
@@ -171,11 +168,18 @@ def play_game(
 
             if counts.sum() > 0:
                 pi = counts / counts.sum()
+                legality_mask = torch.zeros(
+                    move_encoder.mapping_size, dtype=torch.float32
+                )
+                for move in env.board.legal_moves:
+                    legality_mask[move_encoder.encode(move)] = 1.0
+
                 game_records.append(
                     {
                         "state_history": list(env.history),
                         "pi": pi.numpy(),
                         "turn": env.board.turn,
+                        "legality_mask": legality_mask.numpy(),  # Add the new data
                     }
                 )
 
@@ -230,23 +234,35 @@ def play_game(
             outcome = 0.0
             outcome_type = "draw_cap"
         else:
-            # Use a standard if/elif/else block for clarity and correctness
-            if board_outcome.winner is True: # White wins
+            # Determine the game outcome from white's perspective
+            # outcome: 1.0 if white wins, -1.0 if black wins, 0.0 for draw
+            if board_outcome.winner is True:  # White wins
                 outcome = 1.0
-                outcome_type = 'checkmate_white'
-            elif board_outcome.winner is False: # Black wins
+                outcome_type = "checkmate_white"
+            elif board_outcome.winner is False:  # Black wins
                 outcome = -1.0
-                outcome_type = 'checkmate_black'
-            else: # Draw
+                outcome_type = "checkmate_black"
+            else:  # Draw
                 outcome = 0.0
-                outcome_type = 'draw_game'
-
+                outcome_type = "draw_game"
+    
     # Set final z-value for training examples
     final_examples = []
     if game_records:
         for record in game_records:
+            # Calculate z_value from the perspective of the player to move
+            # This flips the outcome for black's perspective
             z_value = outcome if record["turn"] == chess.WHITE else -outcome
             state_tensor = encode_history(record["state_history"])
-            final_examples.append((state_tensor.numpy(), record["pi"], z_value))
+            # Maintain the dictionary structure with all necessary fields
+            final_examples.append(
+                {
+                    "state_history": state_tensor.numpy(),
+                    "pi": record["pi"],
+                    "z_value": z_value,
+                    "turn": record["turn"],
+                    "legality_mask": record["legality_mask"],
+                }
+            )
 
-    return final_examples, outcome, outcome_type, move_count
+    return final_examples, outcome_type, move_count
