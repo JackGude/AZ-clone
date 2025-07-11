@@ -107,6 +107,9 @@ def main():
         # Initialize model
         net = AlphaZeroNet().to(device)
 
+        # if device == "cuda":
+        #     net = torch.compile(net)
+
         # Load weights if requested
         if args.load_weights and os.path.exists(BEST_MODEL_PATH):
             print(f"Loading weights from {BEST_MODEL_PATH}...", flush=True)
