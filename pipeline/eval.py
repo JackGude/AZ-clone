@@ -191,16 +191,16 @@ def log_evaluation_to_wandb(
 
         eval_table.add_data(i + 1, new_model_color, opening_name, result_str)
 
-    # --- Log the summary dictionary, including the results table ---
     eval_summary = {
         "eval_win_rate": win_rate,
         "eval_wins": wins,
         "eval_draws": draws,
         "eval_losses": losses,
-        "evaluation_games_table": eval_table,
     }
-
     wandb.log(eval_summary)
+
+    wandb.log({"evaluation_games_table": eval_table})
+
     print("Finished logging to Weights & Biases.", flush=True)
 
 
