@@ -27,7 +27,7 @@ class SEBlock(nn.Module):
         # between channels and outputs an attention score for each.
         self.excitation = nn.Sequential(
             nn.Linear(channels, squeezed_channels, bias=False),
-            nn.ELU(inplace=True),
+            nn.GELU(),
             nn.Linear(squeezed_channels, channels, bias=False),
             nn.Sigmoid(),  # Sigmoid squashes the output to a [0, 1] range for scaling.
         )
@@ -58,19 +58,15 @@ class ResidualBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(channels)
-        # ADDED: The Squeeze-and-Excitation block.
         self.se = SEBlock(channels)
 
     def forward(self, x):
         residual = x
-        out = F.elu(self.bn1(self.conv1(x)))
+        out = F.gelu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-
-        # ADDED: Apply the SE block to the output before the residual connection.
         out = self.se(out)
-
         out += residual
-        return F.elu(out)
+        return F.gelu(out)
 
 
 class AlphaZeroNet(nn.Module):
@@ -82,8 +78,8 @@ class AlphaZeroNet(nn.Module):
     def __init__(
         self,
         in_channels=119,
-        channels=320,
-        n_res_blocks=19,
+        channels=384,
+        n_res_blocks=40,
         n_moves=4672,
         n_policy_heads=3,
     ):
@@ -108,7 +104,7 @@ class AlphaZeroNet(nn.Module):
                 nn.Sequential(
                     nn.Conv2d(channels, 2, kernel_size=1),
                     nn.BatchNorm2d(2),
-                    nn.ELU(),
+                    nn.GELU(),
                     nn.Flatten(),
                     nn.Linear(2 * 8 * 8, n_moves),
                 )
@@ -119,10 +115,10 @@ class AlphaZeroNet(nn.Module):
         # --- Gating Network for MoE Policy ---
         self.policy_gating_head = nn.Sequential(
             nn.Conv2d(channels, 2, kernel_size=1),  # Reduce channels to 2
-            nn.ELU(inplace=True),
+            nn.GELU(),
             nn.Flatten(),
             nn.Linear(2 * 8 * 8, 32),  # Map to hidden size
-            nn.ELU(inplace=True),
+            nn.GELU(),
             nn.Linear(32, n_policy_heads)  # Output logits for each policy head
         )
 
@@ -136,7 +132,7 @@ class AlphaZeroNet(nn.Module):
         # and maps them down to a single score.
         self.value_head = nn.Sequential(
             nn.Linear(channels, 256),
-            nn.ELU(inplace=True),
+            nn.GELU(),
             nn.Linear(256, 1),
             nn.Tanh(),
         )
@@ -144,16 +140,16 @@ class AlphaZeroNet(nn.Module):
         # --- Auxiliary Legality Head ---
         self.legality_head = nn.Sequential(
             nn.Conv2d(channels, 1, kernel_size=1),
-            nn.ELU(),
+            nn.GELU(),
             nn.Flatten(),
             nn.Linear(1 * 8 * 8, 256),
-            nn.ELU(inplace=True),
+            nn.GELU(),
             nn.Linear(256, n_moves),
         )
 
     def forward(self, x):
         # Initial block and residual tower
-        out = F.elu(self.bn_in(self.conv_in(x)))
+        out = F.gelu(self.bn_in(self.conv_in(x)))
         for block in self.res_blocks:
             out = block(out)
 
@@ -196,5 +192,10 @@ class AlphaZeroNet(nn.Module):
         # --- Legality Head ---
         legality_logits = self.legality_head(out)
 
+        # Calculate load balancing loss to encourage using all experts
+        mean_gating_weights = gating_weights.mean(dim=0)
+        importance_per_expert = mean_gating_weights
+        load_balancing_loss = torch.sum(importance_per_expert * mean_gating_weights)
+
         # Return all necessary outputs
-        return aggregated_policy_logits, value, legality_logits
+        return aggregated_policy_logits, value, legality_logits, load_balancing_loss

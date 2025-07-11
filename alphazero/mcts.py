@@ -78,8 +78,8 @@ class MCTS:
         root = TreeNode()
 
         # 1. Initial Evaluation & Expansion of the Root Node
-        # Unpack only the first two values (policy_logits, value) and ignore the third (legality_logits)
-        policy_logits, value, _ = self.net(env.get_state_tensor().to(self.device))
+        # Unpack the network outputs: policy_logits, value, legality_logits, load_balancing_loss
+        policy_logits, value, _, _ = self.net(env.get_state_tensor().to(self.device))
         root_value = value.item()  # Cache the raw network eval of the root
 
         legal_moves = {move for move in env.board.legal_moves}
@@ -146,8 +146,8 @@ class MCTS:
                 env.get_state_tensor(board) for _, board in leaf_nodes_to_evaluate
             ]
             state_batch = torch.cat(states).to(self.device)
-            # Unpack only the first two values (policy_logits, value) and ignore the third (legality_logits)
-            policy_logits_b, values_b, _ = self.net(state_batch)
+            # Unpack the network outputs: policy_logits, value, legality_logits, load_balancing_loss
+            policy_logits_b, values_b, _, _ = self.net(state_batch)
 
             probs_b = torch.softmax(policy_logits_b, dim=1).cpu().numpy()
             values_np = values_b.squeeze(1).cpu().numpy()
