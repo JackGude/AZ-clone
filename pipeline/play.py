@@ -282,10 +282,20 @@ def log_selfplay_to_wandb(results, num_total_games):
         game_lengths.append(game_length)
 
     avg_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0
+    
+    # Calculate percentages
+    total_games = sum(summary_counts.values())
+    drawn_games = sum(count for outcome, count in summary_counts.items() if 'draw' in outcome.lower())
+    win_loss_games = total_games - drawn_games
+    
+    drawn_percentage = (drawn_games / total_games * 100) if total_games > 0 else 0
+    win_loss_percentage = (win_loss_games / total_games * 100) if total_games > 0 else 0
 
     selfplay_summary = {
         "selfplay_total_games": num_total_games,
         "selfplay_avg_game_length": avg_length,
+        "selfplay_drawn_percentage": drawn_percentage,
+        "selfplay_win_loss_percentage": win_loss_percentage,
     }
     # Add the individual outcome counts to the summary
     selfplay_summary.update({f"outcome_{k}": v for k, v in summary_counts.items()})
