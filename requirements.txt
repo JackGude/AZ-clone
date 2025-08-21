@@ -1,16 +1,19 @@
 # Core dependencies
-torch>=2.0.0
-numpy>=1.20.0
-chess>=1.9.0
-tqdm>=4.62.0
-matplotlib>=3.5.0
+torch
+numpy
+chess
+tqdm
+matplotlib
+pygame
+pandas
 
 # Optional dependencies for analysis and development
-stockfish-python>=2.0.0  # For Stockfish integration
-pytest>=7.0.0  # For testing
-pylint>=2.12.0  # For code quality
-black>=22.0.0  # For code formatting
+wandb
+stockfish  # For Stockfish integration
+pytest  # For testing
+pylint  # For code quality
+black  # For code formatting
 
 # For web interface (if needed)
-# fastapi>=0.68.0
-# uvicorn>=0.15.0
+# fastapi
+# uvicorn

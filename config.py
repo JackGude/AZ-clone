@@ -33,7 +33,7 @@ AUTOMATE_DEFAULT_NUM_SELFPLAY_GAMES = 2000  # Number of self-play games to gener
 AUTOMATE_NUM_EVAL_GAMES = 48  # Number of games to play to compare models
 AUTOMATE_EVAL_TIME_LIMIT = 10  # Time in seconds per move for evaluation games
 AUTOMATE_WIN_THRESHOLD = 0.52  # Win rate needed for a candidate to be promoted
-AUTOMATE_WARMUP_GENS = 10  # Number of initial generations to run without evaluation
+AUTOMATE_WARMUP_GENS = 15  # Number of initial generations to run without evaluation
 
 # -----------------------------------------------------------------------------
 #  Self-Play Config (self_play.py)
@@ -59,18 +59,22 @@ DRAW_CAP_PENALTY = 0.0  # Reward for hitting the move cap
 # -----------------------------------------------------------------------------
 #  Training Config (train.py)
 # -----------------------------------------------------------------------------
-NUM_TRAINING_WORKERS = NUM_WORKERS  # Number of DataLoader workers to use for training
-# Hyperparameters from your latest sweep
-WARMUP_LEARNING_RATE = 1.009e-4
-WARMUP_WEIGHT_DECAY = 3.027e-5
+NUM_TRAINING_WORKERS = NUM_WORKERS
+WARMUP_LEARNING_RATE = 2e-3
+WARMUP_WEIGHT_DECAY = 1.8e-4
 LEARNING_RATE = 6.181e-5
 WEIGHT_DECAY = 4.731e-5
 
 # Training Process Parameters
-TRAIN_WINDOW_SIZE = MAX_DECISIVE_GAMES + MAX_DRAW_GAMES  # Number of positions to sample for training
+TRAIN_WINDOW_SIZE = MAX_DECISIVE_GAMES + MAX_DRAW_GAMES
 BATCH_SIZE = 480
 MAX_EPOCHS = 20
-PATIENCE = 3  # Early stopping patience
+PATIENCE = 3
+# Default loss weights (from sweep)
+DEFAULT_POLICY_LOSS_WEIGHT = 1.4
+DEFAULT_LOAD_BALANCE_LOSS_WEIGHT = 0.12
+DEFAULT_VALUE_LOSS_WEIGHT = 0.6
+DEFAULT_LEGALITY_LOSS_WEIGHT = 0.5
 
 # -----------------------------------------------------------------------------
 #  Evaluation Config (evaluate.py)

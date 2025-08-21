@@ -15,7 +15,7 @@ env/
 .idea/
 *.sublime-*
 
-# Logs and generated data (DO NOT TRACK THESE)
+# Logs and generated data
 /logs/
 /models/
 /eval_games/

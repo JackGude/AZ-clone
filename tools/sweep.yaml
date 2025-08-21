@@ -1,34 +1,59 @@
 # sweep.yaml
 
-program: pipeline/train.py
-
+program: pipeline.train
 method: bayes
-
-project: alphazero-chess
+project: alphazero-chess-2
 
 metric:
-  name: best_validation_loss
+  name: best/weighted_validation_loss
   goal: minimize
 
-count: 20
+command:
+  - ${env}
+  - ${interpreter}
+  - -m
+  - ${program}
+  - ${args}
+  - ${if:load-weights} --load-weights ${endif}
 
 parameters:
+  # --- Locked parameters ---
   max-epochs:
     value: 20
   patience:
     value: 3
-
-  # If true: this is a fine-tuning run
-  # If false: this is a from-scratch (warmup) run
   load-weights:
-    value: false
+    value: true
+  n-res-blocks:
+    value: 40
+  channels:
+    value: 384
 
+  # --- Swept training parameters ---
+  # MUST BE FLOATS
   learning-rate:
     distribution: log_uniform_values
-    min: 0.00001
-    max: 0.0001
-
+    min: 7.0e-4
+    max: 5.0e-3
   weight-decay:
     distribution: log_uniform_values
-    min: 0.00001
-    max: 0.0005
+    min: 5.0e-5
+    max: 5.0e-3
+
+  # --- Swept loss weights ---
+  # policy-loss-weight:
+  #   distribution: uniform
+  #   min: 0.75
+  #   max: 1.5
+  # load-balance-loss-weight:
+  #   distribution: uniform
+  #   min: 0.01
+  #   max: 0.15
+  # value-loss-weight:
+  #   distribution: uniform
+  #   min: 0.5
+  #   max: 1.5
+  # legality-loss-weight:
+  #   distribution: uniform
+  #   min: 0.2
+  #   max: 0.8

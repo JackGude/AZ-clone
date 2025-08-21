@@ -6,29 +6,44 @@ This script handles the training pipeline including data loading, model training
 validation, and checkpointing. It uses PyTorch's IterableDataset for efficient
 data loading and processing.
 """
+
 import argparse
 import os
 import random
 
-import torch
-import wandb
-from torch.utils.data import DataLoader
-
 from alphazero.model import AlphaZeroNet
 from alphazero.utils import ensure_project_root
-from pipeline.data import load_tensor_files_for_training, StreamingDataset
-from pipeline.training import Trainer
-
 from config import (
-    NUM_TRAINING_WORKERS,
     BATCH_SIZE,
     BEST_MODEL_PATH,
+    DEFAULT_LEGALITY_LOSS_WEIGHT,
+    DEFAULT_LOAD_BALANCE_LOSS_WEIGHT,
+    DEFAULT_POLICY_LOSS_WEIGHT,
+    DEFAULT_VALUE_LOSS_WEIGHT,
     LEARNING_RATE,
     MAX_EPOCHS,
+    NUM_TRAINING_WORKERS,
     PATIENCE,
     PROJECT_NAME,
     WEIGHT_DECAY,
 )
+from pipeline.data import StreamingDataset, load_tensor_files_for_training
+from pipeline.training import Trainer
+import torch
+from torch.utils.data import DataLoader
+import wandb
+
+
+# Helper function to handle boolean arguments from strings
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 def main():
@@ -40,10 +55,14 @@ def main():
         default="manual",
         help="Generation ID for this run (used for grouping in wandb)",
     )
+    # CORRECTED: This new definition robustly handles boolean flags from wandb sweeps
     parser.add_argument(
         "--load-weights",
-        action="store_true",
-        help="Load the best model weights before training",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Load the best model weights before training. Accepts true/false values.",
     )
     parser.add_argument(
         "--batch-size",
@@ -64,6 +83,30 @@ def main():
         help=f"Weight decay (default: {WEIGHT_DECAY})",
     )
     parser.add_argument(
+        "--policy-loss-weight",
+        type=float,
+        default=DEFAULT_POLICY_LOSS_WEIGHT,
+        help=f"Weight for the policy loss component. (default: {DEFAULT_POLICY_LOSS_WEIGHT})",
+    )
+    parser.add_argument(
+        "--load-balance-loss-weight",
+        type=float,
+        default=DEFAULT_LOAD_BALANCE_LOSS_WEIGHT,
+        help=f"Weight for the load balance loss component. (default: {DEFAULT_LOAD_BALANCE_LOSS_WEIGHT})",
+    )
+    parser.add_argument(
+        "--value-loss-weight",
+        type=float,
+        default=DEFAULT_VALUE_LOSS_WEIGHT,
+        help=f"Weight for the value loss component. (default: {DEFAULT_VALUE_LOSS_WEIGHT})",
+    )
+    parser.add_argument(
+        "--legality-loss-weight",
+        type=float,
+        default=DEFAULT_LEGALITY_LOSS_WEIGHT,
+        help=f"Weight for the legality loss component. (default: {DEFAULT_LEGALITY_LOSS_WEIGHT})",
+    )
+    parser.add_argument(
         "--max-epochs",
         type=int,
         default=MAX_EPOCHS,
@@ -75,43 +118,50 @@ def main():
         default=PATIENCE,
         help=f"Number of epochs to wait before early stopping (default: {PATIENCE})",
     )
+    parser.add_argument(
+        "--n-res-blocks",
+        type=int,
+        default=40,
+        help=f"Number of residual blocks in the model's tower. (default: {40})",
+    )
+    parser.add_argument(
+        "--channels",
+        type=int,
+        default=384,
+        help=f"Number of channels in the model's convolutional layers. (default: {384})",
+    )
     args = parser.parse_args()
 
-    # Check if this is a W&B sweep run
-    is_sweep = bool(os.environ.get("WANDB_SWEEP_ID"))
+    # --- SIMPLIFIED W&B INITIALIZATION ---
+    # This is the single source of truth.
+    # We pass the 'args' object directly to the config.
+    # W&B automatically handles sweeps this way.
+    run = wandb.init(
+        project=PROJECT_NAME,
+        config=args,  # Use the argparse object directly
+    )
 
-    # Initialize wandb
-    if not is_sweep:
-        run = wandb.init(
-            project=PROJECT_NAME,
-            group=args.gen_id,
-            name=f"{args.gen_id}-training",
-            config={
-                "learning_rate": args.learning_rate,
-                "weight_decay": args.weight_decay,
-                "batch_size": args.batch_size,
-                "max_epochs": args.max_epochs,
-                "patience": args.patience,
-                "gen_id": args.gen_id,
-            },
-        )
-        config = wandb.config
-    else:
-        run = wandb.init()
-        config = wandb.config
+    # For the rest of the script, wandb.config will be our reliable config object.
+    # W&B ensures that its keys use underscores, matching Python attribute access.
+    config = wandb.config
+    # --- END SIMPLIFICATION ---
 
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {device}", flush=True)
-        
-        # Initialize model
-        net = AlphaZeroNet().to(device)
+
+        # Initialize model using attribute-style access (e.g., config.n_res_blocks)
+        # This now works because 'config' is created from 'args' and has the correct keys.
+        net = AlphaZeroNet(
+            channels=config.channels,
+            n_res_blocks=config.n_res_blocks,
+        ).to(device)
 
         # if device == "cuda":
         #     net = torch.compile(net)
 
         # Load weights if requested
-        if args.load_weights and os.path.exists(BEST_MODEL_PATH):
+        if config.load_weights and os.path.exists(BEST_MODEL_PATH):
             print(f"Loading weights from {BEST_MODEL_PATH}...", flush=True)
             net.load_state_dict(torch.load(BEST_MODEL_PATH, weights_only=True))
         else:
@@ -136,22 +186,22 @@ def main():
         # Create training and validation datasets
         train_dataset = StreamingDataset(train_files, shuffle=True)
         val_dataset = StreamingDataset(val_files, shuffle=False)
-        
+
         # Create data loaders
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
             num_workers=NUM_TRAINING_WORKERS // 2,  # Use integer division
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=True,
         )
-        
+
         val_loader = DataLoader(
             val_dataset,
             batch_size=config.batch_size,
             num_workers=NUM_TRAINING_WORKERS // 2,  # Use integer division
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=True,
         )
 
         # Initialize and run trainer
@@ -160,9 +210,9 @@ def main():
             device=device,
             train_loader=train_loader,
             val_loader=val_loader,
-            config=config
+            config=config,
         )
-        
+
         # Start training
         trainer.train()
 
@@ -174,6 +224,7 @@ def main():
 
     if run:
         run.finish()
+
 
 if __name__ == "__main__":
     ensure_project_root()

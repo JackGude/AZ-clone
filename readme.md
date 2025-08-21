@@ -130,7 +130,7 @@ You can easily download models that have been saved as artifacts in Weights & Bi
 2.  **Download a specific model version:**
 
     ```bash
-    wandb artifact get alphazero-chess/model-<RUN_ID>:v0 --root ./checkpoints/download/
+    wandb artifact get alphazero-chess/model-<RUN_ID>:v0 --root ./models/downloaded/
     ```
 
     Replace `<RUN_ID>` with the ID of the run from the list. The model (`best.pth`) will be downloaded to the specified directory.
